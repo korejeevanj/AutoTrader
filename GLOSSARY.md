@@ -31,6 +31,9 @@ The preserved dataset, policy, execution-preset and code provenance identifying 
 **Run identity**:
 The input hash and code versions derived from a replay run's frozen dataset, replay and engine settings and the replay-behaviour assemblies. A saved replay run is recoverable only while its run identity still matches; host-only code does not contribute to it.
 
+**Preparation verdict**:
+The outcome of preparing one historical day: the replay and engine settings after the preparation gates (incomplete option coverage and special sessions disable candle research and strategies), the loaded dataset, its qualification and every warning. A day is Ready only when it has no warnings and its qualification holds; hosts record the verdict rather than re-deriving it.
+
 **Attempt evidence**:
 Response progress and normalized coverage belonging to one acquisition attempt. A processed response is distinct from validated coverage and qualified strategy evidence.
 

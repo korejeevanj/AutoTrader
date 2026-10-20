@@ -66,6 +66,8 @@ public sealed partial class HistoricalReplayService : BackgroundService
         public IReadOnlyDictionary<string, ReplayUiBar[]> Series = new Dictionary<string, ReplayUiBar[]>();
         public ReplayChartInstrument[] ChartChoices = [];
         public ReplayDataHealth? Health;
+        /// <summary>Everything BuildHealth reads; health is rebuilt exactly when one of these changes.</summary>
+        public (AcquisitionAttemptEvidence Evidence, bool CanReplay, bool PriceOnly, HistoricalReadinessSummary? Qualification, IReadOnlyList<string> Warnings) HealthInputs;
         public HistoricalReadinessSummary? Qualification;
         public AcquisitionAttemptEvidence AttemptEvidence = new(job.Attempt, job.Date,
             job.Instruments.Select(row => new HistoricalInstrumentAcquisition(row.Id, row.Token, row.Role, row.State, row.Rows, row.Cached, row.Error)));
@@ -340,29 +342,12 @@ public sealed partial class HistoricalReplayService : BackgroundService
                 });
             }
         }, token);
-        var replay = ReplayConfiguration.FromJson(frozen.ReplayJson);
-        var engine = ApplyProfitExit(EngineConfiguration.FromJson(frozen.EngineJson), runtime.Job.ProfitExitOverride);
-        var warnings = plan.Warnings.ToList();
-        if (!plan.AllOptionsCovered) replay = replay with { EnableCandleResearch = false };
-        var profile = engine.Strategies.SingleOrDefault(profile => profile.IndexId == "BANKNIFTY")
-            ?? throw new InvalidDataException("BANKNIFTY strategy profile missing.");
-        if (profile.OpeningStart != calendar.Open || profile.SessionExit >= calendar.Close)
-        {
-            warnings.Add("SPECIAL_SESSION_REQUIRES_DATE_SPECIFIC_STRATEGY_PROFILE");
-            replay = replay with { EnableCandleResearch = false };
-            engine = engine with { Strategies = engine.Strategies.Select(item => item with { Enabled = false }).ToArray() };
-        }
-        var dataset = KiteCandleImporter.Load(manifestPath, replay.PublicationLag);
-        var qualification = new HistoricalReadiness(dataset, replay, engine).Summary(day);
+        var verdict = PreparationVerdict.Evaluate(ReplayConfiguration.FromJson(frozen.ReplayJson),
+            ApplyProfitExit(EngineConfiguration.FromJson(frozen.EngineJson), runtime.Job.ProfitExitOverride), plan, manifestPath, day, calendar.Open, calendar.Close);
+        var (replay, engine, dataset, qualification) = (verdict.Replay, verdict.Engine, verdict.Dataset, verdict.Qualification);
         runtime.RetryOnlyFailed = null;
-        var optionalCoverage = dataset.Coverage?.Where(row => row.Role is "Call" or "Put").ToArray() ?? [];
-        if (optionalCoverage.Any(row => row.State == "Unavailable")) warnings.Add($"OPTION_SERIES_UNAVAILABLE:{optionalCoverage.Count(row => row.State == "Unavailable")}");
-        if (optionalCoverage.Any(row => row.State == "Sparse")) warnings.Add($"OPTION_SERIES_SPARSE:{optionalCoverage.Count(row => row.State == "Sparse")}");
-        var dataErrors = dataset.Issues.Count(issue => issue.Code is not ("SPARSE_OPTION_CANDLES" or "NO_OPTION_CANDLES" or "OPTION_FILE_UNAVAILABLE"));
-        Log(runtime, "VALIDATION_COMPLETED", new { dataErrors, issues = dataset.Issues.Count, coverage = dataset.Coverage }, dataErrors > 0 ? "Warning" : "Information", acquisition: true);
-        if (dataErrors != 0) warnings.Add($"DATA_QUALITY_ERRORS:{dataErrors}");
-        if (!replay.FeeSchedules.Any(schedule => schedule.Applies(HistoricalAcquisitionStore.Midnight(day, "Asia/Kolkata").Add(profile.EntryStart.ToTimeSpan()), profile.Risk.FeeProfileId, dataset.Manifest.IsSynthetic)))
-            warnings.Add("FEES_UNAVAILABLE_FOR_RESEARCH");
+        Log(runtime, "VALIDATION_COMPLETED", new { dataErrors = verdict.DataErrors, issues = dataset.Issues.Count, coverage = dataset.Coverage },
+            verdict.DataErrors > 0 ? "Warning" : "Information", acquisition: true);
         await runtime.Gate.WaitAsync();
         try
         {
@@ -378,7 +363,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
             {
                 runtime.EnrichedDataset = dataset; runtime.EnrichedReplay = replay; runtime.EnrichedEngine = engine;
                 if ((runtime.Session?.CurrentTimeUtc is null || runtime.Session.IsComplete) && runtime.Job.State != "Playing" && !runtime.Publishing) await ResetSession(runtime, recoverCurrent: true);
-                runtime.Job = runtime.Job with { CanReplay = true, PreparationComplete = true, Warnings = warnings.Concat(qualification.Issues).Distinct().ToArray(),
+                runtime.Job = runtime.Job with { CanReplay = true, PreparationComplete = true, Warnings = verdict.Issues,
                     State = runtime.PriceOnly ? runtime.Job.State : "ReadyWithWarnings",
                     Message = runtime.PriceOnly ? "Engine inputs prepared. Restart replay to activate the decision maker and paper simulation; current replay remains frozen."
                         : "Engine-backed paper replay ready. Every decision is evaluated; missing required evidence rejects entries with reasons." };
@@ -386,13 +371,13 @@ public sealed partial class HistoricalReplayService : BackgroundService
                 return;
             }
             runtime.Dataset = dataset; runtime.Replay = replay; runtime.Engine = engine;
-            runtime.Job = runtime.Job with { Warnings = warnings.Concat(qualification.Issues).Distinct().ToArray() };
+            runtime.Job = runtime.Job with { Warnings = verdict.Issues };
             await ResetSession(runtime, recoverCurrent: true);
             var completedPlayback = runtime.Session!.IsComplete;
             var publishedReports = completedPlayback && ReportPath(runtime.Job.Id, runtime.Job.Run, "summary.md") is not null;
             runtime.Job = runtime.Job with { State = completedPlayback ? publishedReports ? "Completed" : "Paused"
-                    : warnings.Count == 0 && qualification.Qualified ? "Ready" : "ReadyWithWarnings", CanReplay = true, PreparationComplete = true, ReportsAvailable = publishedReports,
-                Warnings = warnings.Concat(qualification.Issues).Distinct().ToArray(), Mode = dataset.Manifest.IsSynthetic ? "SYNTHETIC TEST" : "PAPER + REPLAY — CANDLE RESEARCH",
+                    : verdict.Ready ? "Ready" : "ReadyWithWarnings", CanReplay = true, PreparationComplete = true, ReportsAvailable = publishedReports,
+                Warnings = verdict.Issues, Mode = dataset.Manifest.IsSynthetic ? "SYNTHETIC TEST" : "PAPER + REPLAY — CANDLE RESEARCH",
                 Message = completedPlayback ? publishedReports ? "Recovered completed playback and its immutable published reports."
                     : "Recovered completed playback. Reports are not published; retry report publication from Run evidence."
                     : qualification.Qualified ? "Historical input evidence qualified. Playback is paused; execution remains a candle model."
@@ -517,8 +502,9 @@ public sealed partial class HistoricalReplayService : BackgroundService
     private void PublishSnapshot(RuntimeJob runtime)
     {
         runtime.Revision++; Volatile.Write(ref runtime.PublishedView, BuildView(runtime));
-        if (runtime.Acquiring || runtime.Health is null || runtime.Health.Processed != runtime.Job.Finished || runtime.Health.Readiness == "Price preview only"
-            || runtime.Health.Qualification != runtime.Qualification || !runtime.Job.CanReplay && runtime.Health.Readiness != "Not ready")
-            Volatile.Write(ref runtime.Health, BuildHealth(runtime));
+        var inputs = (runtime.AttemptEvidence, runtime.Job.CanReplay, runtime.PriceOnly, runtime.Qualification, runtime.Job.Warnings);
+        if (runtime.Health is not null && runtime.HealthInputs == inputs) return;
+        runtime.HealthInputs = inputs;
+        Volatile.Write(ref runtime.Health, BuildHealth(runtime));
     }
 }
