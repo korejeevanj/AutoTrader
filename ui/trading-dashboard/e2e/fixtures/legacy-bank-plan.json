@@ -1,0 +1,47 @@
+{
+  "id": "legacy-bank-plan",
+  "savedAtUtc": "2026-10-10T12:00:00+00:00",
+  "mode": "SYNTHETIC TEST",
+  "scenarioId": "normal",
+  "snapshotId": "synthetic-dashboard-v1:normal",
+  "contractId": "synth-bnf-20261029-51500-CE",
+  "lots": 1,
+  "units": 25,
+  "status": "planned",
+  "thesis": "Original bank thesis",
+  "stopPlan": "Observe only",
+  "invalidation": "Missing evidence",
+  "note": "<b>old plain text</b>",
+  "snapshot": {
+    "schemaVersion": "1",
+    "fixtureVersion": "synthetic-dashboard-v1",
+    "snapshotId": "synthetic-dashboard-v1:normal",
+    "scenarioId": "normal",
+    "scenarioLabel": "Normal",
+    "sequence": 1,
+    "asOfUtc": "2026-10-12T04:45:05+00:00",
+    "source": "SYNTHETIC_FIXTURE",
+    "mode": "SYNTHETIC TEST",
+    "freshness": { "state": "fresh", "quoteAgeSeconds": 2, "receiptAgeSeconds": 1, "message": "Fixed synthetic as-of" },
+    "market": { "indexName": "BANKNIFTY (synthetic cash context)", "indexValue": 52140, "futuresSymbol": "SYNTH-BANKNIFTY-FUT", "futuresValue": 52169, "changePercent": 0.27 },
+    "chart": {
+      "symbol": "SYNTH-BANKNIFTY-FUT",
+      "bars": [{ "startUtc": "2026-10-12T03:45:00+00:00", "endUtc": "2026-10-12T03:46:00+00:00", "availableAtUtc": "2026-10-12T03:46:01+00:00", "open": 51988, "high": 52000, "low": 51980, "close": 51992, "volume": 100 }],
+      "openingRangeHigh": 52050,
+      "openingRangeLow": 51980,
+      "vwap": [{ "timeUtc": "2026-10-12T03:45:00+00:00", "value": 51990.67 }],
+      "vwapLabel": "Approximate futures VWAP (synthetic one-minute candle typical price × volume)"
+    },
+    "banks": [{ "id": "synth-bank-a", "name": "Fixture Bank A", "weightPercent": 40, "lastPrice": 102, "vwap": 100, "changePercent": 2, "aboveVwap": true, "state": "fresh", "eventTimeUtc": "2026-10-12T04:45:03+00:00", "receivedAtUtc": "2026-10-12T04:45:04+00:00" }],
+    "participation": { "aboveVwapWeightPercent": 80, "belowVwapWeightPercent": 20, "missingWeightPercent": 0, "coverageLabel": "Illustrative synthetic weights; missing weight disclosed against 100%, never renormalized" },
+    "options": [{
+      "contract": { "id": "synth-bnf-20261029-51500-CE", "symbol": "SYNTH-BNF-29OCT-51500-CE", "exchange": "SYNTHETIC", "underlying": "BANKNIFTY", "optionType": "CE", "expiry": "2026-10-29", "strike": 51500, "lotSize": 25, "tickSize": 0.05, "validFromUtc": "2026-10-11T03:45:00+00:00", "validToUtc": "2026-10-29T03:45:00+00:00", "isSynthetic": true },
+      "quote": { "lastPrice": 210.5, "bid": 210, "ask": 211, "bidQuantity": 100, "askQuantity": 125, "eventTimeUtc": "2026-10-12T04:45:03+00:00", "receivedAtUtc": "2026-10-12T04:45:04+00:00", "lastTradeTimeUtc": "2026-10-12T04:45:02+00:00", "state": "fresh" },
+      "spread": 1,
+      "quoteAgeSeconds": 2,
+      "decision": { "action": "WATCH", "reasonCodes": ["SYNTHETIC_ILLUSTRATION", "NO_SELECTION_POLICY"] }
+    }],
+    "position": { "state": "none", "positionId": null, "contractId": null, "lots": null, "units": null, "entryPrice": null, "currentBid": null, "grossPnl": null, "netPnl": null, "message": "No preset position. Journal plans are not orders or fills." },
+    "planning": { "roundTripFees": null, "requiredCash": null, "netRisk": null, "availabilityReason": "Unavailable: synthetic fixture has no effective-date fee, cash or net-risk model. Paper execution is disabled." }
+  }
+}

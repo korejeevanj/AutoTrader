@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <UserSecretsId>AutoTrader-Trading.Api-local</UserSecretsId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="[10.0.12]" />
+    <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="[10.3.0]" />
+    <ProjectReference Include="../Trading.Engine/Trading.Engine.csproj" />
+    <ProjectReference Include="../Trading.Recorder/Trading.Recorder.csproj" />
+    <ProjectReference Include="../Trading.Portfolio/Trading.Portfolio.csproj" />
+    <ProjectReference Include="../Trading.Replay/Trading.Replay.csproj" />
+    <EmbeddedResource Include="../../docs/12-DAILY-KITE-SETUP.md" LogicalName="Trading.Api.ReplaySetup.md" />
+    <Content Update="kite.credentials.Local.json" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+</Project>

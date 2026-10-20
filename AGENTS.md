@@ -1,10 +1,18 @@
 # AutoTrader agent guide
 
 ## Current state and source precedence
-- This checkout contains planning/research Markdown only. No application, manifests, lockfiles, CI, or build/test commands exist yet. Paths in the architecture documents are proposed; inspect the checkout before scaffolding and verify installed tooling before pinning SDK/package versions.
+- This checkout contains a .NET 10/React multi-index synthetic cockpit: configured index catalog, deterministic snapshots, shared fixture analytics, frozen option comparison, SQLite plan journal and preset positions. Swagger/OpenAPI is Development-only; SignalR is an empty hub. Live feed, recording, engine integration and paper execution remain pending; inspect existing code before extending it.
 - Read `docs/08-MONDAY-LIVE-PAPER-SPRINT.md` first for the 12 October 2026 milestone. It brings experimental selection and local paper execution forward, overriding the 9 October manual-dashboard-only ordering for that milestone. Real execution and actual-account monitoring remain deferred.
 - `docs/00-START-HERE.md` and `docs/01-SCOPE-AND-DECISIONS.md` describe the wider baseline. `docs/resources/` preserves dated research, not current scope. The custom dashboard is already decided; D00 is inspiration work, not a build-versus-buy gate.
 - Consult `docs/02-ARCHITECTURE-1.md` and `docs/05-SYSTEM-COMPONENTS-AND-PROJECTS.md` for contracts/ownership, `docs/06-DASHBOARD-SPECIFICATION.md` for UI, and `docs/03-DATA-AND-REPLAY.md` for historical/replay rules. These describe intended behavior, not implemented capabilities.
+- For the synthetic cockpit, read `docs/09-SYNTHETIC-DASHBOARD-INCREMENT.md` for its agreed API, journal and interaction boundaries. Fixture freshness uses its supplied as-of clock; saved plans preserve server-resolved evidence and are not paper intents/fills.
+- For index/Swagger changes, read `docs/10-MULTI-INDEX-AND-OPENAPI-INCREMENT.md`: backend catalog drives identities, schema-2 snapshots/requests carry index identity, and known schema-1 journal evidence remains immutable. Index definitions, strategy configuration and portfolio controls are distinct.
+- For engine work, read `docs/11-ENGINE-SESSION-HANDOFF.md` and inspect current `Trading.Engine` source. A separate session owns that module and dedicated engine tests; coordinate shared Domain/Analytics/Risk/API changes before editing them.
+
+## Build and verification
+- Follow `README.md` for SDK selection, locked restores, local startup and verification commands. `global.json` pins the SDK; a user-local installation must be placed on the terminal's `PATH` before invoking .NET or Playwright.
+- Run backend build/tests and frontend build after relevant changes. Browser tests require free ports 5080/5173 and start their own processes with an isolated journal; use `ui/trading-dashboard/README.md` for setup and connectivity semantics.
+- Core project ownership/reference directions are documented in `src/Trading.Api/README.md`. Context/Alerts/Research/Shadow are README placeholders; Replay is currently a library.
 
 ## Implementation boundaries
 - Planned sprint stack: one local C#/.NET API process hosting feed, recorder, analytics, engine and paper broker; custom React/TypeScript UI over REST snapshots and SignalR. SQLite stores journal/config/paper state; append-only versioned files store market events. Logical modules do not require separate services.

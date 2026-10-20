@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../Trading.Analytics/Trading.Analytics.csproj" />
+    <ProjectReference Include="../Trading.Risk/Trading.Risk.csproj" />
+  </ItemGroup>
+</Project>

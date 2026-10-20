@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "trading.analytics": {
+        "type": "Project",
+        "dependencies": {
+          "Trading.Domain": "[1.0.0, )"
+        }
+      },
+      "trading.domain": {
+        "type": "Project"
+      },
+      "trading.risk": {
+        "type": "Project",
+        "dependencies": {
+          "Trading.Domain": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

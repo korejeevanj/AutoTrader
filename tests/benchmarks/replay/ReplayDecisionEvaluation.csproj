@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Trading.Replay/Trading.Replay.csproj" />
+    <Compile Include="Program.cs" />
+    <Compile Include="LossAudit.cs" />
+    <Compile Include="../../Trading.Tests/Replay/ReplayFixture.cs" Link="ReplayFixture.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+TradingView Lightweight Charts™
+Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/
+
+This application distributes Lightweight Charts 5.2.1, unmodified, under the
+Apache License, Version 2.0. The license distributed with the npm package also
+retains: Copyright 2023 TradingView, Inc.
+
+Upstream NOTICE: https://github.com/tradingview/lightweight-charts/blob/v5.2.1/NOTICE
+License copy: LICENSE-lightweight-charts.txt
