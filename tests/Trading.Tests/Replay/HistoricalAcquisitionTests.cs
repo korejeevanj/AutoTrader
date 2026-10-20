@@ -15,22 +15,7 @@ public sealed class HistoricalAcquisitionTests
         new(new HistoricalAcquisitionStore(root), sources ?? new InMemoryHistoricalSources(), clock ?? new FixedClock(Later),
             Path.Combine(root, "replay.json"), bankInputs);
 
-    // The same dated catalogue, calendar and settings files a host would find under its acquisition root.
-    private static void Seed(ReplayFixture files, InMemoryHistoricalSources sources)
-    {
-        var manifest = files.ReadManifest();
-        manifest = manifest with { Instruments = manifest.Instruments.Select(item => item.Role == HistoricalInstrumentRole.Futures
-            ? item with { Expiry = new(2026, 10, 29) } : item).ToArray() };
-        Directory.CreateDirectory(Path.Combine(files.Root, "catalogs")); Directory.CreateDirectory(Path.Combine(files.Root, "calendars"));
-        File.WriteAllText(Path.Combine(files.Root, "catalogs", "day.json"),
-            System.Text.Json.JsonSerializer.Serialize(new HistoricalCatalogDocument("Synthetic complete contract catalogue", true, manifest), KiteCandleImporter.JsonOptions));
-        File.WriteAllText(Path.Combine(files.Root, "calendars", "2026.json"), System.Text.Json.JsonSerializer.Serialize(new ExchangeCalendarDocument(
-            2026, "Synthetic calendar fixture", true, [new(2026, 10, 8)], [new(ReplayFixture.Date, new(9, 15), new(9, 36))],
-            manifest.CalendarPublicationEvidence), KiteCandleImporter.JsonOptions));
-        File.WriteAllText(Path.Combine(files.Root, "engine.json"), files.Engine.ToJson());
-        File.WriteAllText(Path.Combine(files.Root, "replay.json"), (files.Configuration with { EngineProfile = Path.Combine(files.Root, "engine.json") }).ToJson());
-        foreach (var item in manifest.Instruments) sources.Candles[item.InstrumentToken] = File.ReadAllBytes(Path.Combine(files.Root, item.File));
-    }
+    private static void Seed(ReplayFixture files, InMemoryHistoricalSources sources) => HistoricalTestFiles.Seed(files, sources);
 
     private static AcquisitionRequest Request(string job = "0123456789abcdef0123456789abcdef", bool refresh = false) =>
         new(job, ReplayFixture.Date, "TradingDay", 0, refresh, null);
@@ -190,12 +175,16 @@ internal sealed class InMemoryHistoricalSources : IHistoricalSources
     public readonly List<string> Requested = [];
     public HistoricalAcquisitionPlan? Contracts { get; set; }
     public Exception? BankInputsFailure { get; set; }
-    public Task<byte[]> CandlesAsync(HistoricalInstrument instrument, DateOnly date, TimeOnly open, TimeOnly close,
+    /// <summary>Awaited before each candle response, so a test can hold acquisition at a chosen point.</summary>
+    public Func<HistoricalInstrument, CancellationToken, Task>? BeforeCandles { get; set; }
+    public async Task<byte[]> CandlesAsync(HistoricalInstrument instrument, DateOnly date, TimeOnly open, TimeOnly close,
         Action<KiteRequestAttempt>? onAttempt, CancellationToken token)
     {
-        Requested.Add(instrument.Id); onAttempt?.Invoke(new(1, 200, 0));
-        return Task.FromResult(Candles.TryGetValue(instrument.InstrumentToken, out var raw) ? raw
-            : System.Text.Encoding.UTF8.GetBytes("""{"status":"success","data":{"candles":[]}}"""));
+        lock (Requested) Requested.Add(instrument.Id);
+        onAttempt?.Invoke(new(1, 200, 0));
+        if (BeforeCandles is not null) await BeforeCandles(instrument, token);
+        return Candles.TryGetValue(instrument.InstrumentToken, out var raw) ? raw
+            : System.Text.Encoding.UTF8.GetBytes("""{"status":"success","data":{"candles":[]}}""");
     }
     public Task<HistoricalAcquisitionPlan?> ContractsAsync(DateOnly date, TimeOnly open, TimeOnly close, CancellationToken token) =>
         Task.FromResult(Contracts);

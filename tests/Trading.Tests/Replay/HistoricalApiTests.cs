@@ -448,21 +448,6 @@ public sealed class HistoricalApiTests
     }
 
     [Fact]
-    public async Task Cancel_then_immediate_retry_is_not_lost_or_left_queued_forever()
-    {
-        await using var fixture = new HistoricalApiFixture();
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Handler.Override = async (_, cancellationToken) =>
-        { entered.TrySetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); return new(HttpStatusCode.OK); };
-        fixture.Start(); var job = await fixture.Prepare();
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await fixture.Command(job.Id, "cancel");
-        fixture.Handler.Override = null; await fixture.Command(job.Id, "retry");
-        var recovered = await fixture.Wait(job.Id, view => view.Job.CanReplay || view.Job.State == "Failed");
-        Assert.True(recovered.Job.CanReplay, recovered.Job.Message);
-    }
-
-    [Fact]
     public async Task Successful_empty_option_responses_are_coverage_not_repeated_download_failures()
     {
         await using var fixture = new HistoricalApiFixture();
