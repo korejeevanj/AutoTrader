@@ -94,6 +94,10 @@ public sealed partial class TradingDecisionEngine
                         "RESEARCH_MODELLED_RISK", "Cash-stop/fee/slippage/gap-stress hypothesis; not a guaranteed risk bound.", financial.ModelledNetRisk, strategy.Risk.MaximumNetRisk);
                     gates.Require(financial.SpreadPercent >= 0m && financial.SpreadPercent <= strategy.Evidence.MaximumSpreadPercent,
                         "RESEARCH_MODELLED_SPREAD", "Declared spread, not observed liquidity.", financial.SpreadPercent, strategy.Evidence.MaximumSpreadPercent);
+                    if (strategy.Risk.MaximumFrictionToStopRatio is { } ratio)
+                        gates.Require(financial.Friction >= 0m && financial.Friction <= ratio * strategy.Risk.GrossCashStop,
+                            "RESEARCH_FRICTION_TO_STOP", "Round-trip modelled friction must leave room inside the gross stop.",
+                            financial.Friction, ratio * strategy.Risk.GrossCashStop);
                 }
             }
             gates.Add("UNVERIFIED_EXECUTION", GateOutcome.NOT_EVALUATED,

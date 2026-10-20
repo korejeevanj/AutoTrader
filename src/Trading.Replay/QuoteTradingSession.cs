@@ -83,8 +83,8 @@ public sealed class QuoteTradingSession
         this.mode = manifest.Index.IsSynthetic ? EngineDataMode.SYNTHETIC_TEST : mode ?? EngineDataMode.PAPER_LIVE_DATA;
         this.applyRecoveryBoundaries = applyRecoveryBoundaries;
         profile = settings.Strategies.Single(item => item.IndexId == "BANKNIFTY"); engine = new(settings);
-        if (settings.Strategies.Count != 1 || profile.Lots != 1 || profile.Position.ProfitExit.Mode != ProfitExitMode.Disabled)
-            throw new ArgumentException("Quote-paper v1 supports one BANKNIFTY strategy, one lot and baseline profit exits only.");
+        if (settings.Strategies.Count != 1 || profile.Lots != 1)
+            throw new ArgumentException("Quote-paper v1 supports one BANKNIFTY strategy and one lot only.");
         var midnight = HistoricalAcquisitionStore.Midnight(manifest.TradingDate, "Asia/Kolkata");
         session = new(manifest.TradingDate.ToString("yyyy-MM-dd"), manifest.TradingDate, midnight);
         instruments = manifest.Instruments.ToDictionary(item => item.InstrumentToken);

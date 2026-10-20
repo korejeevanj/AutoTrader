@@ -83,6 +83,97 @@ public sealed class ProfitExitPolicyTests
     }
 
     [Fact]
+    public void Wide_tier_widens_the_giveback_for_large_peaks_but_the_threshold_never_loosens()
+    {
+        var engine = new TradingDecisionEngine(new());
+        var input = WithProfitExit(Legacy with { Mode = ProfitExitMode.TrailingNetProfit, WideTrailPeak = 1000m, WideTrailGiveback = 400m });
+        var narrow = engine.EvaluatePosition(Mark(input, 900m));
+        var crossed = engine.EvaluatePosition(Mark(input, 1100m, 1), narrow.State);
+        Assert.Equal(700m, narrow.State.ProfitTrailThreshold);
+        // 1100 - 400 = 700 would equal the earlier threshold; it must not drop below the ratcheted 700.
+        Assert.Equal(700m, crossed.State.ProfitTrailThreshold);
+        var higher = engine.EvaluatePosition(Mark(input, 1500m, 2), crossed.State);
+        Assert.Equal(1100m, higher.State.ProfitTrailThreshold);
+        var pullback = engine.EvaluatePosition(Mark(input, 1200m, 3), higher.State);
+        Assert.Equal(PositionAction.HOLD, pullback.Action);
+        Assert.Equal(PositionAction.EXIT, engine.EvaluatePosition(Mark(input, 1100m, 4), pullback.State).Action);
+    }
+
+    [Fact]
+    public void Wide_tier_cannot_drop_a_stop_already_ratcheted_by_the_narrow_tier()
+    {
+        var engine = new TradingDecisionEngine(new());
+        var input = WithProfitExit(Legacy with { Mode = ProfitExitMode.TrailingNetProfit, WideTrailPeak = 1000m, WideTrailGiveback = 400m });
+        var narrow = engine.EvaluatePosition(Mark(input, 990m));
+        var wide = engine.EvaluatePosition(Mark(input, 1000m, 1), narrow.State);
+        Assert.Equal(790m, narrow.State.ProfitTrailThreshold);
+        Assert.Equal(790m, wide.State.ProfitTrailThreshold);
+        Assert.Equal(PositionAction.EXIT, engine.EvaluatePosition(Mark(input, 790m, 2), wide.State).Action);
+    }
+
+    [Fact]
+    public void Intact_thesis_widens_the_giveback_but_the_floor_and_ratchet_hold()
+    {
+        var engine = new TradingDecisionEngine(new());
+        var input = WithProfitExit(Legacy with { Mode = ProfitExitMode.TrailingNetProfit, ThesisIntactGivebackFactor = 1.5m });
+        // The fixture position's thesis is intact, so 800 - 200 * 1.5 = 500.
+        var peak = engine.EvaluatePosition(Mark(input, 800m));
+        Assert.Equal(500m, peak.State.ProfitTrailThreshold);
+        Assert.Equal(300m, Assert.Single(peak.Gates, gate => gate.Code == "NET_PROFIT_TRAIL_GIVEBACK").Observed);
+        var floor = engine.EvaluatePosition(Mark(input, 520m, 1), peak.State);
+        Assert.Equal(PositionAction.HOLD, floor.Action);
+        Assert.Equal(PositionAction.EXIT, engine.EvaluatePosition(Mark(input, 500m, 2), floor.State).Action);
+    }
+
+    [Fact]
+    public void Volatility_scaled_giveback_needs_warm_up_is_bounded_and_never_loosens_the_stop()
+    {
+        var engine = new TradingDecisionEngine(new());
+        var policy = Legacy with { Mode = ProfitExitMode.TrailingNetProfit, AdaptiveGivebackMultiplier = 1.5m, MaximumGiveback = 350m, VolatilityWarmupBars = 2, ThesisIntactGivebackFactor = 1.5m };
+        Assert.Equal(200m, policy.GivebackFor(800m, null, false));          // no samples yet: fixed giveback
+        Assert.Equal(200m, policy.GivebackFor(800m, 50m, false));           // quiet market never goes below the configured giveback
+        Assert.Equal(300m, policy.GivebackFor(800m, 200m, false));          // 1.5 x 200 (no thesis widening)
+        Assert.Equal(350m, policy.GivebackFor(800m, 900m, false));          // bounded by the maximum
+        Assert.Equal(350m, policy.GivebackFor(800m, 200m, true));           // thesis factor, still bounded
+        Assert.NotEmpty(new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY", Position = new()
+            { ProfitExit = policy with { MaximumGiveback = 100m } } }] }.Validate());
+        Assert.NotEmpty(new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY", Position = new()
+            { ProfitExit = policy with { ThesisIntactGivebackFactor = 0.5m } } }] }.Validate());
+    }
+
+    [Fact]
+    public void Percentage_giveback_scales_with_the_peak_keeps_the_floor_and_never_loosens_the_stop()
+    {
+        var policy = Legacy with { Mode = ProfitExitMode.TrailingNetProfit, TrailGivebackPercent = 20m, MaximumGiveback = 1000m };
+        Assert.Equal(200m, policy.GivebackFor(800m, null, false));   // 20% = 160, never below the configured giveback
+        Assert.Equal(200m, policy.GivebackFor(1000m, null, false));
+        Assert.Equal(300m, policy.GivebackFor(1500m, null, false));
+        Assert.Equal(400m, policy.GivebackFor(2000m, null, false));
+        Assert.Equal(1000m, policy.GivebackFor(9000m, null, false)); // bounded by the maximum
+        var engine = new TradingDecisionEngine(new());
+        var input = WithProfitExit(policy);
+        var peak = engine.EvaluatePosition(Mark(input, 1500m));
+        Assert.Equal(1200m, peak.State.ProfitTrailThreshold);
+        var pullback = engine.EvaluatePosition(Mark(input, 1300m, 1), peak.State);
+        Assert.Equal(PositionAction.HOLD, pullback.Action);
+        Assert.Equal(PositionAction.EXIT, engine.EvaluatePosition(Mark(input, 1200m, 2), pullback.State).Action);
+        Assert.NotEmpty(new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY", Position = new()
+            { ProfitExit = policy with { TrailGivebackPercent = 100m } } }] }.Validate());
+    }
+
+    [Theory]
+    [InlineData(400, 300)]
+    [InlineData(1000, 200)]
+    [InlineData(1000, 0)]
+    [InlineData(0, 400)]
+    public void Invalid_wide_tiers_are_rejected(decimal peak, decimal giveback)
+    {
+        var settings = new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY", Position = new()
+            { ProfitExit = new() { Mode = ProfitExitMode.TrailingNetProfit, WideTrailPeak = peak, WideTrailGiveback = giveback } } }] };
+        Assert.NotEmpty(settings.Validate());
+    }
+
+    [Fact]
     public void Fixed_target_uses_net_profit_and_latches_the_exit_request()
     {
         var engine = new TradingDecisionEngine(new());
@@ -97,11 +188,16 @@ public sealed class ProfitExitPolicyTests
         Assert.Contains("NET_PROFIT_TARGET", later.ReasonCodes);
     }
 
-    private static PositionEvaluationInput WithPolicy(ProfitExitMode mode)
+    private static PositionEvaluationInput WithPolicy(ProfitExitMode mode) => WithProfitExit(Legacy with { Mode = mode });
+
+    // Fixed ₹200 giveback: no volatility scaling, tier or thesis widening.
+    private static readonly ProfitExitConfiguration Legacy = new() { WideTrailPeak = 0m, WideTrailGiveback = 0m, AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m };
+
+    private static PositionEvaluationInput WithProfitExit(ProfitExitConfiguration policy)
     {
         var input = EngineFixture.Position();
         return input with { Position = input.Position with { FrozenStrategy = input.Position.FrozenStrategy with
-            { Position = input.Position.FrozenStrategy.Position with { ProfitExit = new() { Mode = mode } } } } };
+            { Position = input.Position.FrozenStrategy.Position with { ProfitExit = policy } } } };
     }
 
     private static PositionEvaluationInput Mark(PositionEvaluationInput input, decimal net, int seconds = 0)

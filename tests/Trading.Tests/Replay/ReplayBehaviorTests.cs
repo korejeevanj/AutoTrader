@@ -252,7 +252,7 @@ public sealed class ReplayBehaviorTests
         using var fixture = new ReplayFixture();
         var data = fixture.Load();
         var settings = fixture.Engine with { Strategies = [fixture.Engine.Strategies[0] with
-            { Risk = fixture.Engine.Strategies[0].Risk with { GrossCashStop = 10m } }] };
+            { Risk = fixture.Engine.Strategies[0].Risk with { GrossCashStop = 10m, MaximumFrictionToStopRatio = null } }] };
         var expected = Assert.Single(new ReplayRunner(data, fixture.Configuration, settings).RunToEnd().Sessions).Trades.Single();
         var changed = data with { Candles = data.Candles.Select(bar => bar.InstrumentId == "call"
             && bar.StartUtc == expected.EntryTimeUtc ? bar with { Volume = 0m } : bar).ToArray() };

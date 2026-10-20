@@ -31,6 +31,7 @@
         "GrossCashStop": 200,
         "NetCashStop": null,
         "MaximumNetRisk": 400,
+        "MaximumFrictionToStopRatio": 0.75,
         "MinimumScenarioNetProfit": 500,
         "StructuralLookbackBars": 14,
         "StructuralBufferMultiplier": 0.10,
@@ -44,15 +45,17 @@
         "RequiredProgressR": 0.5,
         "ProfitMilestone": 500,
         "ProfitExit": {
-          "Version": "profit-exit-v1",
-          "Mode": "Disabled",
+          "Version": "profit-exit-v2",
+          "Mode": "TrailingNetProfit",
           "NetTarget": 500,
           "TrailActivation": 500,
           "TrailGiveback": 200,
-          "MinimumLockedNetProfit": 300
+          "MinimumLockedNetProfit": 300,
+          "WideTrailPeak": 1000,
+          "WideTrailGiveback": 400
         }
       },
-      "Ranking": ["SpreadPercentage", "RoundTripFriction", "StrikeDistance", "ObservedDepth"]
+      "Ranking": ["StrikeDistance", "RoundTripFriction", "SpreadPercentage", "ObservedDepth"]
     }
   ],
   "Portfolio": {

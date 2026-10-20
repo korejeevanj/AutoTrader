@@ -38,7 +38,7 @@ public sealed partial class TradingDecisionEngine
         var exits = new List<string>(state.ExitLatched ? state.LatchedExitReasons ?? [] : []);
         var watches = new List<string>();
         var protectionTightened = false;
-        decimal? gross = null, net = null;
+        decimal? gross = null, net = null, trailNet = null;
         var quote = input.OptionQuote;
         var freshBid = candle is null && EvidenceChecks.FreshQuote(quote, position.Contract.Id, input.AsOfUtc, strategy.Evidence)
             && quote!.Bid is > 0m && (quote.Ask is null || (quote.Ask > 0m && quote.Bid <= quote.Ask));
@@ -112,24 +112,7 @@ public sealed partial class TradingDecisionEngine
                     reached ? "Net target reached; request exit using the host execution model." : "Net target has not been reached.", observedNet, profitExit.NetTarget);
                 if (reached) exits.Add("NET_PROFIT_TARGET");
             }
-            else if (profitExit.Mode == ProfitExitMode.TrailingNetProfit)
-            {
-                var armed = state.ProfitTrailArmed || observedNet >= profitExit.TrailActivation;
-                if (armed)
-                {
-                    var threshold = Math.Max(profitExit.MinimumLockedNetProfit, state.PeakNetLiquidationPnl!.Value - profitExit.TrailGiveback);
-                    protectionTightened = state.ProfitTrailThreshold is null || threshold > state.ProfitTrailThreshold;
-                    state = state with { ProfitTrailArmed = true, ProfitTrailThreshold = Math.Max(state.ProfitTrailThreshold ?? threshold, threshold) };
-                    if (protectionTightened)
-                        gates.Add("NET_PROFIT_TRAIL_TIGHTENED", GateOutcome.PASS,
-                            "Tightened net-liquidation-P&L protection, not an underlying-price stop or promised break-even fill.", state.ProfitTrailThreshold);
-                    gates.Add("NET_PROFIT_TRAIL_THRESHOLD", GateOutcome.PASS,
-                        "Armed net-profit floor only tightens; request exit at or below this threshold.", observedNet, state.ProfitTrailThreshold);
-                    if (observedNet <= state.ProfitTrailThreshold) exits.Add("NET_PROFIT_TRAIL");
-                }
-                gates.Add("NET_PROFIT_TRAIL_ACTIVATION", armed ? GateOutcome.PASS : GateOutcome.NOT_EVALUATED,
-                    armed ? "Net-profit trail activated." : "Trail awaits its net-profit activation threshold.", observedNet, profitExit.TrailActivation);
-            }
+            else if (profitExit.Mode == ProfitExitMode.TrailingNetProfit) trailNet = observedNet;
         }
 
         var underlyingFresh = candle is not null ? candle.FuturesCandle is not null
@@ -251,6 +234,50 @@ public sealed partial class TradingDecisionEngine
             gates.Add("SOFT_THESIS_CONFIRMATION", GateOutcome.NOT_EVALUATED,
                 $"{strategy.Position.SoftThesisPolicyVersion}: a completed close strictly with VWAP and at least {strategy.ConfirmationWeightPercent}% directional constituent weight clears weakening; hard thesis failure or deadline {deadline:O} requests exit.",
                 state.WrongSideCloses, strategy.Position.ThesisFailureCloses);
+        }
+        // Evaluated after the thesis checks so a trail that widens while the thesis holds sees this evaluation's evidence.
+        if (trailNet is { } trailObserved)
+        {
+            var peak = state.PeakNetLiquidationPnl!.Value;
+            if (latest is not null && latest.EndUtc > position.EnteredAtUtc && state.NetSampleBarEndUtc != latest.EndUtc)
+            {
+                if (state.LastNetSample is { } previousSample)
+                {
+                    var move = Math.Abs(trailObserved - previousSample);
+                    var alpha = 2m / (profitExit.VolatilityLookbackBars + 1);
+                    state = state with
+                    {
+                        AverageNetBarMove = state.NetMoveSamples == 0 || state.AverageNetBarMove is null ? move
+                            : state.AverageNetBarMove + alpha * (move - state.AverageNetBarMove),
+                        NetMoveSamples = state.NetMoveSamples + 1
+                    };
+                }
+                state = state with { LastNetSample = trailObserved, NetSampleBarEndUtc = latest.EndUtc };
+            }
+            var thesisIntact = state.WrongSideCloses == 0 && state.SoftWeakeningSinceUtc is null
+                && !watches.Any(watch => watch is "VWAP_THESIS_WEAKENING" or "ADVERSE_CONSTITUENT_CONFIRMATION"
+                    or "SOFT_THESIS_CONFIRMATION_PENDING" or "THESIS_EVIDENCE_UNKNOWN" or "THESIS_CONFIRMATION_UNKNOWN"
+                    or "MONITORING_BAR_UNAVAILABLE" or "UNDERLYING_UNPRICED" or "UNDERLYING_PROGRESS_UNKNOWN");
+            var armed = state.ProfitTrailArmed || trailObserved >= profitExit.TrailActivation;
+            if (armed)
+            {
+                decimal? averageMove = state.NetMoveSamples >= profitExit.VolatilityWarmupBars ? state.AverageNetBarMove : null;
+                var giveback = profitExit.GivebackFor(peak, averageMove, thesisIntact);
+                var threshold = Math.Max(profitExit.MinimumLockedNetProfit, peak - giveback);
+                protectionTightened = state.ProfitTrailThreshold is null || threshold > state.ProfitTrailThreshold;
+                state = state with { ProfitTrailArmed = true, ProfitTrailThreshold = Math.Max(state.ProfitTrailThreshold ?? threshold, threshold) };
+                gates.Add("NET_PROFIT_TRAIL_GIVEBACK", GateOutcome.PASS,
+                    $"Giveback {(averageMove is null ? "fixed" : "volatility-scaled")}, thesis {(thesisIntact ? "intact (widened)" : "not confirmed (standard)")}; the net-profit floor is never lowered.",
+                    giveback, averageMove);
+                if (protectionTightened)
+                    gates.Add("NET_PROFIT_TRAIL_TIGHTENED", GateOutcome.PASS,
+                        "Tightened net-liquidation-P&L protection, not an underlying-price stop or promised break-even fill.", state.ProfitTrailThreshold);
+                gates.Add("NET_PROFIT_TRAIL_THRESHOLD", GateOutcome.PASS,
+                    "Armed net-profit floor only tightens; request exit at or below this threshold.", trailObserved, state.ProfitTrailThreshold);
+                if (trailObserved <= state.ProfitTrailThreshold) exits.Add("NET_PROFIT_TRAIL");
+            }
+            gates.Add("NET_PROFIT_TRAIL_ACTIVATION", armed ? GateOutcome.PASS : GateOutcome.NOT_EVALUATED,
+                armed ? "Net-profit trail activated." : "Trail awaits its net-profit activation threshold.", trailObserved, profitExit.TrailActivation);
         }
         if (input.AsOfUtc - position.EnteredAtUtc >= strategy.Position.TimeExitAfter)
         {

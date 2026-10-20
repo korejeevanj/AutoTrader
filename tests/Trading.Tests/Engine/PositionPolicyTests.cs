@@ -19,7 +19,8 @@ public sealed class PositionPolicyTests
         var quote = input.OptionQuote! with { Bid = 225m, Ask = 226m };
         var profitable = input with { OptionQuote = quote,
             NetLiquidation = input.NetLiquidation! with { GrossPnl = 625m, NetPnl = 585m } };
-        Assert.Equal(PositionAction.HOLD, engine.EvaluatePosition(profitable).Action);
+        // The default trailing profit lock arms above its ₹500 activation: protection tightens, but the profit is not taken.
+        Assert.Equal(PositionAction.TIGHTEN_STOP, engine.EvaluatePosition(profitable).Action);
     }
 
     [Fact]

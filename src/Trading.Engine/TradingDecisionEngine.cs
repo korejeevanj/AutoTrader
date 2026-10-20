@@ -310,6 +310,10 @@ public sealed partial class TradingDecisionEngine
         if (risk.SpreadPercent is null or < 0m || risk.RoundTripFriction is null or < 0m || risk.AbsoluteStrikeDistance is null or < 0m)
             gates.Missing("RANKING_METRICS_UNKNOWN", "Shared calculations supply spread %, round-trip friction and futures-relative strike distance.");
         else gates.Require(risk.SpreadPercent <= strategy.Evidence.MaximumSpreadPercent, "MAXIMUM_SPREAD", "Excessive spread fails before ranking.", risk.SpreadPercent, strategy.Evidence.MaximumSpreadPercent);
+        if (strategy.Risk.MaximumFrictionToStopRatio is { } frictionRatio && risk.RoundTripFriction is >= 0m)
+            gates.Require(risk.RoundTripFriction <= frictionRatio * strategy.Risk.GrossCashStop, "FRICTION_TO_STOP",
+                "Round-trip friction (spread, slippage, fees) must leave room inside the gross stop.",
+                risk.RoundTripFriction, frictionRatio * strategy.Risk.GrossCashStop);
         if (risk.RoundTripFees is >= 0m && units is { } quantity)
         {
             var floor = IndicativePlanning.LongQuoteCostFloor(candidate.Quote?.Bid, candidate.Quote?.Ask, candidate.Contract.TickSize,
