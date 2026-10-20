@@ -201,6 +201,7 @@ internal sealed class InMemoryHistoricalSources : IHistoricalSources
         Task.FromResult(Contracts);
     public Task<HistoricalAcquisitionPlan> BankInputsAsync(HistoricalAcquisitionPlan plan, DateOnly date, int maximumSnapshotAgeDays,
         CancellationToken token) => BankInputsFailure is null ? Task.FromResult(plan) : Task.FromException<HistoricalAcquisitionPlan>(BankInputsFailure);
+    public Task<byte[]> MasterAsync(CancellationToken token) => throw new NotSupportedException("The in-memory sources have no instrument dump.");
 }
 
 internal sealed class RecordingObserver : IAcquisitionObserver

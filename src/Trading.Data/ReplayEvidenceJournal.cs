@@ -19,6 +19,8 @@ public sealed partial class ReplayEvidenceJournal(string path)
     private readonly object schemaGate = new();
     private bool initialized;
     public bool IsInitialized => Volatile.Read(ref initialized);
+    /// <summary>True when a journal file already exists, so storage initialization can start at once.</summary>
+    public bool FileExists => File.Exists(path);
     public void Initialize() { using var connection = Open(); }
     internal SqliteConnection Open()
     {

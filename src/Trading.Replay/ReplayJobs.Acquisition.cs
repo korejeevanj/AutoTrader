@@ -1,13 +1,12 @@
 using Trading.Data;
 using Trading.Domain;
-using Trading.Replay;
 
-namespace Trading.Api;
+namespace Trading.Replay;
 
-public sealed partial class HistoricalReplayService
+public sealed partial class ReplayJobs
 {
     /// <summary>Records the acquisition module's progress on the job; the module owns what is acquired.</summary>
-    private sealed class AcquisitionProgress(HistoricalReplayService host, RuntimeJob runtime) : IAcquisitionObserver
+    private sealed class AcquisitionProgress(ReplayJobs host, RuntimeJob runtime) : IAcquisitionObserver
     {
         private int attempt;
 
@@ -19,7 +18,7 @@ public sealed partial class HistoricalReplayService
             await host.Change(runtime, job =>
             {
                 runtime.AttemptEvidence = new(attempt, day);
-                return job with { State = "Resolving", CalendarStatus = session.Status, Message = "Resolving historical identities and all option expiries/strikes.",
+                return job with { State = ReplayJobState.Resolving, CalendarStatus = session.Status, Message = "Resolving historical identities and all option expiries/strikes.",
                     Attempt = attempt, CanReplay = false, ReportsAvailable = false, PreparationComplete = false, Instruments = [], Total = 0, Finished = 0 };
             });
         }
@@ -35,7 +34,7 @@ public sealed partial class HistoricalReplayService
                     .WithDataset(runtime.Job.Attempt, preview.Dataset);
                 runtime.Dataset = preview.Dataset; runtime.Replay = preview.Replay; runtime.Engine = preview.Engine;
                 await host.ResetSession(runtime, recoverCurrent: true);
-                runtime.Job = runtime.Job with { State = "ReadyWithWarnings", CanReplay = true, Mode = "PAPER + REPLAY — PRICE ONLY",
+                runtime.Job = runtime.Job with { State = ReplayJobState.ReadyWithWarnings, CanReplay = true, Mode = "PAPER + REPLAY — PRICE ONLY",
                     Message = "Price playback is ready. Looking up this day's actual NSE contract file in the background; no live-contract substitution.",
                     Warnings = ["HISTORICAL_CATALOGUE_UNAVAILABLE", "PRICE_ONLY_NO_STRATEGY_TRADES"], Total = 1, Finished = 1,
                     Instruments = [new(index.Id, index.InstrumentToken, "CashIndex", cache.Complete ? "Complete" : "Partial", cache.Rows, true, null)] };
@@ -50,7 +49,7 @@ public sealed partial class HistoricalReplayService
         {
             if (progress.Validating)
             {
-                await host.Change(runtime, job => job with { State = runtime.PriceOnly ? job.State : "Validating", Message = "Validating candle coverage and freezing replay inputs." });
+                await host.Change(runtime, job => job with { State = runtime.PriceOnly ? job.State : ReplayJobState.Validating, Message = "Validating candle coverage and freezing replay inputs." });
                 return;
             }
             var instruments = progress.Instruments.Select(row => new ReplayInstrumentProgress(row.Id, row.Token,
@@ -59,7 +58,7 @@ public sealed partial class HistoricalReplayService
                 await host.Change(runtime, job =>
                 {
                     runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(attempt, progress.Instruments);
-                    return job with { State = runtime.PriceOnly ? job.State : "Downloading", CatalogSource = plan.Source,
+                    return job with { State = runtime.PriceOnly ? job.State : ReplayJobState.Downloading, CatalogSource = plan.Source,
                         Warnings = plan.Warnings, Instruments = instruments, Total = instruments.Length, Finished = 0,
                         Message = "Downloading essential index/futures/bank inputs first, then the full date-valid option catalogue." };
                 });
@@ -89,7 +88,7 @@ public sealed partial class HistoricalReplayService
     /// <summary>Records an acquisition that stopped before producing frozen, downloaded inputs.</summary>
     private Task Conclude(RuntimeJob runtime, AcquisitionOutcome outcome) => outcome switch
     {
-        AcquisitionOutcome.MarketClosed closed => Change(runtime, job => job with { State = "MarketClosed", CalendarStatus = closed.Session.Status,
+        AcquisitionOutcome.MarketClosed closed => Change(runtime, job => job with { State = ReplayJobState.MarketClosed, CalendarStatus = closed.Session.Status,
             Message = closed.Session.Message, CanReplay = false }),
         AcquisitionOutcome.IndexUnavailable unavailable => Change(runtime, job =>
         {
@@ -97,7 +96,7 @@ public sealed partial class HistoricalReplayService
             ReplayInstrumentProgress[] row = [new(index.Id, index.InstrumentToken, "CashIndex", "Unavailable", 0, false, "EMPTY_RESPONSE")];
             runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(unavailable.Attempt,
                 [new(index.Id, index.InstrumentToken, "CashIndex", "Unavailable", 0, false, "EMPTY_RESPONSE")]);
-            return job with { State = "NoData", Message = "No selected-day index candles returned; not proof of a holiday.", CanReplay = false,
+            return job with { State = ReplayJobState.NoData, Message = "No selected-day index candles returned; not proof of a holiday.", CanReplay = false,
                 Total = 1, Finished = 1, Instruments = row };
         }),
         AcquisitionOutcome.PricePreviewOnly => Change(runtime, job => job with { Message = "Historical prices are replayable. No dated NSE contract file was available; strategy and option coverage remain unavailable." }),

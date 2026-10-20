@@ -19,6 +19,9 @@ The identity and content hash of the exact raw response selected for an instrume
 **Durable replay evidence**:
 The committed evaluation batches, indexed decisions, paper-state checkpoints and entry-control history belonging to one replay run. An evaluation awaiting commitment remains pending and must be committed before the replay advances again.
 
+**Replay job**:
+The host-visible unit for preparing and playing one historical date: its acquisition attempts, its state and its commands. A job may open several replay runs (restarts, refreshed gaps, policy variants). Whether a command is legal is decided once, from the job's facts, before any transition happens.
+
 **Replay run**:
 One execution of a frozen dataset and policy under a selected execution preset. Its identity distinguishes it from restarts, policy variants and other presets, even when their historical dates match.
 

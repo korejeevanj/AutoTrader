@@ -16,13 +16,19 @@ public sealed class KiteCredentialOptions
 }
 public sealed record PrepareHistoricalReplayRequest(DateOnly Date, bool Refresh = false);
 public sealed record HistoricalReplayCommand(string Action, double Speed = 60, Trading.Engine.ProfitExitConfiguration? ProfitExit = null);
-public sealed record ReplayInstrumentProgress(string Id, long Token, string Role, string State, int Rows, bool Cached, string? Error);
+/// <summary>The wire shape of a replay job: states are their names, as clients and saved jobs have always had them.</summary>
 public sealed record HistoricalReplayJob(string Id, DateOnly Date, bool Refresh, string RequestFingerprint,
     string State, string Message, string CalendarStatus, string? CatalogSource, IReadOnlyList<string> Warnings,
-    IReadOnlyList<ReplayInstrumentProgress> Instruments, int Total, int Finished, bool CanReplay,
+    IReadOnlyList<Trading.Replay.ReplayInstrumentProgress> Instruments, int Total, int Finished, bool CanReplay,
     string Mode, DateTimeOffset UpdatedAtUtc, int Attempt = 0, int Run = 0, bool ReportsAvailable = false,
     bool PreparingData = false, string? ActivePresetId = null, bool PreparationComplete = false, bool AllPresets = false,
-    Trading.Engine.ProfitExitConfiguration? ProfitExitOverride = null, bool StartNewRunAfterPreparation = false);
+    Trading.Engine.ProfitExitConfiguration? ProfitExitOverride = null, bool StartNewRunAfterPreparation = false)
+{
+    public static HistoricalReplayJob From(Trading.Replay.ReplayJob job, bool preparingData) => new(job.Id, job.Date, job.Refresh,
+        job.RequestFingerprint, job.State.ToString(), job.Message, job.CalendarStatus, job.CatalogSource, job.Warnings, job.Instruments,
+        job.Total, job.Finished, job.CanReplay, job.Mode, job.UpdatedAtUtc, job.Attempt, job.Run, job.ReportsAvailable, preparingData,
+        job.ActivePresetId, job.PreparationComplete, job.AllPresets, job.ProfitExitOverride, job.StartNewRunAfterPreparation);
+}
 public sealed record ReplayConnectionStatus(string CredentialStatus, DateOnly LatestCompletedDate,
     string GuideUrl, string MetadataMessage);
 public sealed record ReplayUiBar(string Id, DateTimeOffset StartUtc, DateTimeOffset EndUtc, DateTimeOffset AvailableAtUtc,
@@ -54,7 +60,7 @@ public sealed record HistoricalReplayView(HistoricalReplayJob Job, DateTimeOffse
     int OpenPositions, int PendingEntries, decimal? NetSessionPnl, ReplayUiSettings? Settings,
     IReadOnlyList<string> ReportFiles, string PlaybackKind = "Strategy", string ChartLabel = "Historical futures context",
     string? ChartInstrumentId = null, IReadOnlyList<ReplayChartInstrument>? ChartInstruments = null,
-    Trading.Replay.PaperStateView? Paper = null, string? PaperRunId = null, ReplayTiming? Timing = null, long Revision = 0, bool JournalPending = false, string? DiagnosticError = null,
+    Trading.Replay.PaperStateView? Paper = null, string? PaperRunId = null, Trading.Replay.ReplayTiming? Timing = null, long Revision = 0, bool JournalPending = false, string? DiagnosticError = null,
     ReplayPresetProgress? PresetProgress = null, string? ServerInstanceId = null)
 {
     internal IReadOnlyDictionary<string, ReplayUiBar[]> Series { get; init; } = new Dictionary<string, ReplayUiBar[]>();

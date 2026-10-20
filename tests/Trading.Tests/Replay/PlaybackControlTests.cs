@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using Trading.Api;
+using Trading.Replay;
 using Xunit;
 
 namespace Trading.Tests.Replay;

@@ -70,15 +70,15 @@ public static class HistoricalReplayEndpoints
         await service.ViewAsync(id, instrumentId) is { } view ? TypedResults.Ok(light == true ? view with { Job = view.Job with { Instruments = [] }, Decisions = view.Decisions.Select(row => row with { Gates = null }).ToArray() } : view) : TypedResults.Problem(statusCode: 404, title: "Replay job not found");
     private static async Task<Results<Ok<HistoricalReplayView>, ProblemHttpResult>> Command(string id, string? instrumentId, HistoricalReplayCommand request, HistoricalReplayService service)
     {
-        try
+        switch (await service.CommandAsync(id, request))
         {
-            if (!await service.CommandAsync(id, request)) return TypedResults.Problem(statusCode: 404, title: "Replay job not found");
-            return TypedResults.Ok((await service.ViewAsync(id, instrumentId))!);
+            case Trading.Replay.ReplayCommandResult.UnknownJob: return TypedResults.Problem(statusCode: 404, title: "Replay job not found");
+            case Trading.Replay.ReplayCommandResult.Rejected rejected: return TypedResults.Problem(statusCode: 400, title: "Invalid replay command", detail: rejected.Message);
+            case Trading.Replay.ReplayCommandResult.StorageUnavailable:
+                return TypedResults.Problem(statusCode: 503, title: "Paper ledger unavailable", detail: request.Action == "setProfitExit"
+                    ? "Profit-policy selection could not commit. Restore storage and retry preparation before playback."
+                    : "Replay is paused. Restore ledger storage, then retry Step to commit the pending batch.");
+            default: return TypedResults.Ok((await service.ViewAsync(id, instrumentId))!);
         }
-        catch (ArgumentException error) { return TypedResults.Problem(statusCode: 400, title: "Invalid replay command", detail: error.Message); }
-        catch (Exception error) when (error is IOException or System.Data.Common.DbException)
-        { return TypedResults.Problem(statusCode: 503, title: "Paper ledger unavailable", detail: request.Action == "setProfitExit"
-            ? "Profit-policy selection could not commit. Restore storage and retry preparation before playback."
-            : "Replay is paused. Restore ledger storage, then retry Step to commit the pending batch."); }
     }
 }

@@ -13,6 +13,8 @@ public interface IHistoricalSources
         Action<KiteRequestAttempt>? onAttempt, CancellationToken token);
     Task<HistoricalAcquisitionPlan?> ContractsAsync(DateOnly date, TimeOnly open, TimeOnly close, CancellationToken token);
     Task<HistoricalAcquisitionPlan> BankInputsAsync(HistoricalAcquisitionPlan plan, DateOnly date, int maximumSnapshotAgeDays, CancellationToken token);
+    /// <summary>The provider's current instrument dump, archived so later days can resolve their own contracts.</summary>
+    Task<byte[]> MasterAsync(CancellationToken token);
 }
 
 public sealed class ProviderHistoricalSources(HistoricalAcquisitionStore store, KiteHistoricalClient kite,
@@ -25,4 +27,5 @@ public sealed class ProviderHistoricalSources(HistoricalAcquisitionStore store, 
         store.ResolveNseAsync(exchange, date, open, close, token);
     public Task<HistoricalAcquisitionPlan> BankInputsAsync(HistoricalAcquisitionPlan plan, DateOnly date, int maximumSnapshotAgeDays, CancellationToken token) =>
         store.EnrichBanksAsync(plan, bankInputs, date, token, maximumSnapshotAgeDays);
+    public Task<byte[]> MasterAsync(CancellationToken token) => kite.MasterAsync(token);
 }

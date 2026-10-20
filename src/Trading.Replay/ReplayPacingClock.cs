@@ -1,4 +1,4 @@
-namespace Trading.Api;
+namespace Trading.Replay;
 
 // Host-only pacing. Historical event order and decision timestamps never depend on wall time.
 public sealed class ReplayPacingClock(TimeProvider clock)

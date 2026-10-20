@@ -18,31 +18,9 @@ public sealed record ReplayRunComparison(ReplayRunInfo Left, ReplayRunInfo Right
 
 public sealed partial class HistoricalReplayService
 {
-    private void Log(RuntimeJob runtime, string code, object? detail = null, string severity = "Information", bool acquisition = false)
+    private ReplayDataHealth BuildHealth(ReplayJobSnapshot snapshot)
     {
-        var json = JsonSerializer.Serialize(detail ?? new { }, KiteCandleImporter.JsonOptions);
-        try
-        {
-            switch (operationLog.Record(new(runtime.Job.Id, acquisition ? 0 : runtime.Job.Run, runtime.Replay?.Presets[runtime.PresetIndex].Id,
-                clock.GetUtcNow(), runtime.Session?.CurrentTimeUtc, severity, code, json)))
-            {
-                case OperationLogStatus.BacklogFull:
-                    runtime.DiagnosticError = "Operational log initialization backlog is full; wait for storage initialization before continuing.";
-                    return;
-                case OperationLogStatus.Queued: return;
-                default: runtime.DiagnosticError = null; break;
-            }
-        }
-        catch (Exception error) when (error is IOException or System.Data.Common.DbException)
-        {
-            runtime.DiagnosticError = "Operational log storage is unavailable. Restore storage before continuing replay.";
-            runtime.Session?.Pause(); runtime.Job = runtime.Job with { State = runtime.Job.CanReplay ? "Paused" : "Failed", Message = runtime.DiagnosticError };
-            PublishSnapshot(runtime);
-        }
-    }
-    private ReplayDataHealth BuildHealth(RuntimeJob runtime)
-    {
-        var evidence = runtime.AttemptEvidence;
+        var evidence = snapshot.AttemptEvidence;
         var rows = evidence.Instruments.Select(row =>
         {
             var impact = row.Role switch { "Futures" => "Missing/invalid intervals block dependent opening-range and setup decisions.",
@@ -60,16 +38,33 @@ public sealed partial class HistoricalReplayService
         }).ToArray();
         var totals = evidence.Totals;
         return new(totals.Total, totals.Processed, totals.Complete, totals.Sparse, totals.Empty, totals.Failed, totals.Pending, totals.Cached, totals.RequiredAffected,
-            !runtime.Job.CanReplay ? "Not ready" : runtime.PriceOnly ? "Price preview only"
-                : runtime.Qualification?.Qualified != true ? "Incomplete — diagnostic replay only" : "Qualified historical inputs — candle model only",
-            rows, runtime.Job.Warnings, totals.Invalid, runtime.Qualification, runtime.Job.Id, evidence.Number, serverInstanceId);
+            !snapshot.Job.CanReplay ? "Not ready" : snapshot.PriceOnly ? "Price preview only"
+                : snapshot.Qualification?.Qualified != true ? "Incomplete — diagnostic replay only" : "Qualified historical inputs — candle model only",
+            rows, snapshot.Job.Warnings, totals.Invalid, snapshot.Qualification, snapshot.Job.Id, evidence.Number, serverInstanceId);
     }
-    public ReplayDataHealth? Health(string id) => jobs.TryGetValue(id, out var runtime) ? Volatile.Read(ref runtime.Health) ?? BuildHealth(runtime) : null;
-    public ReplayRunDiagnostics? Diagnostics(string id) => jobs.ContainsKey(id) ? new(operationLog.Recent(id), paperJournal.IsInitialized ? paperJournal.RunInfos(id) : [], !paperJournal.IsInitialized) : null;
+
+    // Health is rebuilt exactly when an input BuildHealth reads has changed.
+    public ReplayDataHealth? Health(string id)
+    {
+        if (jobs.Snapshot(id) is not { } snapshot) return null;
+        var inputs = (snapshot.AttemptEvidence, snapshot.Job.CanReplay, snapshot.PriceOnly, snapshot.Qualification, snapshot.Job.Warnings);
+        if (health.TryGetValue(id, out var cached) && cached.Inputs == inputs) return cached.Health;
+        var built = BuildHealth(snapshot);
+        health[id] = (inputs, built);
+        return built;
+    }
+
+    public async Task<IReadOnlyList<PaperJournalRow>?> PaperLog(string id, int limit, string? category)
+    {
+        if (jobs.Snapshot(id) is not { } snapshot) return null;
+        var runId = snapshot.PaperRunId;
+        return await Task.Run<IReadOnlyList<PaperJournalRow>>(() => runId is null ? [] : paperJournal.Read(runId, limit, category));
+    }
+    public ReplayRunDiagnostics? Diagnostics(string id) => jobs.Exists(id) ? new(operationLog.Recent(id), paperJournal.IsInitialized ? paperJournal.RunInfos(id) : [], !paperJournal.IsInitialized) : null;
     public IReadOnlyList<ReplayRunInfo> Runs(DateOnly? date) => paperJournal.IsInitialized ? paperJournal.RunInfos(date: date?.ToString("yyyy-MM-dd")) : [];
     public ReplayRunComparison Compare(string id, string left, string right)
     {
-        if (!jobs.ContainsKey(id)) throw new ArgumentException("Job not found.");
+        if (!jobs.Exists(id)) throw new ArgumentException("Job not found.");
         var first = paperJournal.RunInfos(id).SingleOrDefault(run => run.RunId == left) ?? throw new ArgumentException("Select a run belonging to this job.");
         var second = paperJournal.RunInfos(date: first.Date).SingleOrDefault(run => run.RunId == right) ?? throw new ArgumentException("Comparison run not found.");
         if (first.DatasetHash != second.DatasetHash) throw new ArgumentException("Runs use different frozen datasets and cannot be compared as a strategy experiment.");
@@ -77,7 +72,7 @@ public sealed partial class HistoricalReplayService
         var differences = paperJournal.Compare(left, right);
         return new(first, second, differences.Take(100).ToArray(), differences.Count > 100, first.InputHash != second.InputHash || first.Preset != second.Preset);
     }
-    private bool OwnsRun(string id, string runId) => paperJournal.IsInitialized && jobs.ContainsKey(id) && paperJournal.HasRun(id, runId);
+    private bool OwnsRun(string id, string runId) => paperJournal.IsInitialized && jobs.Exists(id) && paperJournal.HasRun(id, runId);
     public ReplayEventPage? Events(string id, string runId, int limit, long? before, string? category, string? search)
     {
         if (!OwnsRun(id, runId)) return null;
