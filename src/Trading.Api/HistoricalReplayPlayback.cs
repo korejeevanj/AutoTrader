@@ -200,13 +200,10 @@ public sealed partial class HistoricalReplayService
             runtime.EnrichedReplay = null; runtime.EnrichedEngine = null;
         }
         runtime.Lifecycle ??= new(runtime.Job.Id, runtime.Job.Date, paperJournal, clock);
-        var versions = new[] { typeof(HistoricalReplayService).Assembly, typeof(CandleReplaySession).Assembly, typeof(Trading.Engine.TradingDecisionEngine).Assembly,
-            typeof(Trading.Risk.HistoricalResearchCalculations).Assembly, typeof(Trading.Analytics.HistoricalSessionAnalytics).Assembly,
-            typeof(KiteCandleImporter).Assembly, typeof(Trading.Domain.HistoricalCandle).Assembly }
-            .Select(assembly => new ReplayCodeVersion(assembly.GetName().Name!, assembly.ManifestModule.ModuleVersionId)).ToArray();
         try
         {
-            runtime.Lifecycle.Open(new(runtime.Dataset!, runtime.Replay!, runtime.Engine!, InputHash(runtime), versions, runtime.Job.Warnings), previousRun,
+            runtime.Lifecycle.Open(new(runtime.Dataset!, runtime.Replay!, runtime.Engine!,
+                ReplayRunIdentity.InputHash(runtime.Dataset!, runtime.Replay!, runtime.Engine!), ReplayRunIdentity.CodeVersions, runtime.Job.Warnings), previousRun,
                 runtime.Job.StartNewRunAfterPreparation || runtime.RecoverSavedRun || recoverCurrent && runtime.Lifecycle.HasSession
                     ? new(previousRun, runtime.Job.ActivePresetId, runtime.Job.AllPresets, runtime.Job.StartNewRunAfterPreparation) : null,
                 step => CacheDecisionRows(runtime, step));

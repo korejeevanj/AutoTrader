@@ -28,6 +28,9 @@ The selected historical day's accepted playback, data-health and paper-event evi
 **Run manifest**:
 The preserved dataset, policy, execution-preset and code provenance identifying a replay run. A manifest identifies the experiment separately from its evaluation batches and results.
 
+**Run identity**:
+The input hash and code versions derived from a replay run's frozen dataset, replay and engine settings and the replay-behaviour assemblies. A saved replay run is recoverable only while its run identity still matches; host-only code does not contribute to it.
+
 **Attempt evidence**:
 Response progress and normalized coverage belonging to one acquisition attempt. A processed response is distinct from validated coverage and qualified strategy evidence.
 

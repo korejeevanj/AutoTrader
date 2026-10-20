@@ -68,10 +68,7 @@ public static class ReplayReportWriter
             ReplayConfiguration = replay, EngineConfiguration = engine,
             ReplayConfigurationHash = KiteCandleImporter.Hash(Encoding.UTF8.GetBytes(replay.ToJson())),
             EngineConfigurationFingerprint = new TradingDecisionEngine(engine).ConfigurationFingerprint,
-            CodeVersions = new[] { typeof(ReplayRunner).Assembly, typeof(TradingDecisionEngine).Assembly,
-                typeof(Trading.Analytics.HistoricalSessionAnalytics).Assembly, typeof(Trading.Risk.HistoricalResearchCalculations).Assembly,
-                typeof(KiteCandleImporter).Assembly, typeof(HistoricalCandle).Assembly }
-                .Select(assembly => new { assembly.GetName().Name, Mvid = assembly.ManifestModule.ModuleVersionId }),
+            CodeVersions = ReplayRunIdentity.CodeVersions,
             EvidenceClass = "CANDLE_RESEARCH_NOT_OBSERVED_EXECUTION", IndependentDailyCapital = true,
             IntrabarFillTiming = "Interval only; booked when complete candle is available",
             PositiveDelayStops = "With positive execution delay, cash stops request pending exits and use a later eligible opening; no intrabar imputation",

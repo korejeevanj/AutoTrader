@@ -5,15 +5,6 @@ namespace Trading.Api;
 
 public sealed partial class HistoricalReplayService
 {
-    private string InputHash(RuntimeJob runtime) => HistoricalAcquisitionStore.SafeName(runtime.Dataset!.ManifestSha256
-        + string.Join("|", runtime.Dataset.Files.OrderBy(file => file.InstrumentId, StringComparer.Ordinal).Select(file => file.Sha256))
-        + runtime.Replay!.ToJson() + runtime.Engine!.ToJson()
-        + typeof(CandleReplaySession).Assembly.ManifestModule.ModuleVersionId + typeof(Trading.Engine.TradingDecisionEngine).Assembly.ManifestModule.ModuleVersionId
-        + typeof(Trading.Risk.HistoricalResearchCalculations).Assembly.ManifestModule.ModuleVersionId
-        + typeof(Trading.Analytics.HistoricalSessionAnalytics).Assembly.ManifestModule.ModuleVersionId
-        + typeof(KiteCandleImporter).Assembly.ManifestModule.ModuleVersionId + typeof(Trading.Domain.HistoricalCandle).Assembly.ManifestModule.ModuleVersionId
-        + typeof(HistoricalReplayService).Assembly.ManifestModule.ModuleVersionId);
-
     private void SetPaperEntries(RuntimeJob runtime, bool paused)
     {
         if (runtime.PriceOnly || runtime.JournalRunId is null) throw new ArgumentException("Engine-backed replay is required.");
