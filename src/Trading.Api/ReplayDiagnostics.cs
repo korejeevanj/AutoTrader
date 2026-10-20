@@ -42,14 +42,14 @@ public sealed partial class HistoricalReplayService
             ReplayEvidenceVerdict.RawReadiness(snapshot), rows, snapshot.Job.Warnings, totals.Invalid, snapshot.Qualification, snapshot.Job.Id, evidence.Number, serverInstanceId);
     }
 
-    // Health is rebuilt exactly when an input BuildHealth reads has changed.
+    // Health is a pure function of one snapshot, so the snapshot's revision is its version: it is rebuilt
+    // exactly when the job published something newer.
     public ReplayDataHealth? Health(string id)
     {
         if (jobs.Snapshot(id) is not { } snapshot) return null;
-        var inputs = (snapshot.AttemptEvidence, snapshot.Job.CanReplay, snapshot.PriceOnly, snapshot.Qualification, snapshot.Job.Warnings);
-        if (health.TryGetValue(id, out var cached) && cached.Inputs == inputs) return cached.Health;
+        if (health.TryGetValue(id, out var cached) && cached.Revision == snapshot.Revision) return cached.Health;
         var built = BuildHealth(snapshot);
-        health[id] = (inputs, built);
+        health[id] = (snapshot.Revision, built);
         return built;
     }
 

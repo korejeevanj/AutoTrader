@@ -17,7 +17,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
     private readonly ReplayOperationLog operationLog;
     private readonly ReplayJobs jobs;
     private readonly ConcurrentDictionary<string, (ReplayJobSnapshot Snapshot, HistoricalReplayView View)> views = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, ((AcquisitionAttemptEvidence, bool, bool, HistoricalReadinessSummary?, IReadOnlyList<string>) Inputs, ReplayDataHealth Health)> health = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (long Revision, ReplayDataHealth Health)> health = new(StringComparer.Ordinal);
 
     public HistoricalReplayService(IOptions<HistoricalReplayOptions> options, IWebHostEnvironment environment,
         KiteHistoricalClient provider, TimeProvider clock, NseHistoricalContractClient exchange, PublishedBankInputsClient bankInputs)

@@ -20,19 +20,31 @@ public sealed record ReplayEvidenceVerdict(string Label, string JobLabel, bool P
     {
         var job = snapshot.Job;
         var preparing = snapshot.Acquiring || job.State.IsPreparing();
-        var pricePreview = snapshot.PriceOnly;
-        var qualification = pricePreview || preparing ? null : snapshot.Qualification;
+        var qualification = snapshot.PriceOnly || preparing ? null : snapshot.Qualification;
         var readiness = preparing ? "Acquisition in progress — evidence awaiting validation" : RawReadiness(snapshot);
-        var label = job.State == ReplayJobState.MarketClosed ? "Not applicable — market closed"
-            : job.State == ReplayJobState.AuthenticationRequired ? "Evidence blocked — authentication required"
-            : job.State == ReplayJobState.NoData ? "Evidence unavailable"
-            : pricePreview ? job.PreparationComplete ? "Prepared strategy inputs await Restart replay" : preparing ? "Strategy input preparation in progress" : "Strategy inputs unavailable"
-            : qualification is null ? "Evidence awaiting validation" : qualification.Qualified ? "Evidence qualified" : "Evidence incomplete";
-        var jobLabel = job.State != ReplayJobState.Completed ? job.State.ToString()
-            : pricePreview ? job.PreparationComplete ? "Price preview completed — restart to apply prepared inputs" : "Price preview completed — strategy inputs unavailable"
-            : qualification is null ? "Playback completed — checking evidence"
-            : qualification.Qualified ? "Playback completed — input evidence qualified" : "Playback completed — evidence incomplete";
         var totals = snapshot.AttemptEvidence.Totals;
-        return new(label, jobLabel, preparing, readiness, totals.Sparse + totals.Empty + totals.Failed + totals.Invalid + (qualification?.Issues.Count ?? 0), qualification);
+        return new(LabelFor(job, snapshot.PriceOnly, preparing, qualification), JobLabelFor(job, snapshot.PriceOnly, qualification), preparing, readiness,
+            totals.Sparse + totals.Empty + totals.Failed + totals.Invalid + (qualification?.Issues.Count ?? 0), qualification);
     }
+
+    private static string LabelFor(ReplayJob job, bool pricePreview, bool preparing, HistoricalReadinessSummary? qualification) => job.State switch
+    {
+        ReplayJobState.MarketClosed => "Not applicable — market closed",
+        ReplayJobState.AuthenticationRequired => "Evidence blocked — authentication required",
+        ReplayJobState.NoData => "Evidence unavailable",
+        _ when pricePreview => job.PreparationComplete ? "Prepared strategy inputs await Restart replay"
+            : preparing ? "Strategy input preparation in progress" : "Strategy inputs unavailable",
+        _ => Outcome(qualification, "Evidence awaiting validation", "Evidence qualified", "Evidence incomplete")
+    };
+
+    private static string JobLabelFor(ReplayJob job, bool pricePreview, HistoricalReadinessSummary? qualification) => job.State switch
+    {
+        not ReplayJobState.Completed => job.State.ToString(),
+        _ when pricePreview => job.PreparationComplete ? "Price preview completed — restart to apply prepared inputs"
+            : "Price preview completed — strategy inputs unavailable",
+        _ => Outcome(qualification, "Playback completed — checking evidence", "Playback completed — input evidence qualified", "Playback completed — evidence incomplete")
+    };
+
+    private static string Outcome(HistoricalReadinessSummary? qualification, string unknown, string qualified, string incomplete) =>
+        qualification is null ? unknown : qualification.Qualified ? qualified : incomplete;
 }

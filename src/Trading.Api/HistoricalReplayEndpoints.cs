@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http.HttpResults;
+using Trading.Replay;
 
 namespace Trading.Api;
 
@@ -72,9 +73,9 @@ public static class HistoricalReplayEndpoints
     {
         switch (await service.CommandAsync(id, request))
         {
-            case Trading.Replay.ReplayCommandResult.UnknownJob: return TypedResults.Problem(statusCode: 404, title: "Replay job not found");
-            case Trading.Replay.ReplayCommandResult.Rejected rejected: return TypedResults.Problem(statusCode: 400, title: "Invalid replay command", detail: rejected.Message);
-            case Trading.Replay.ReplayCommandResult.StorageUnavailable:
+            case ReplayCommandResult.UnknownJob: return TypedResults.Problem(statusCode: 404, title: "Replay job not found");
+            case ReplayCommandResult.Rejected rejected: return TypedResults.Problem(statusCode: 400, title: "Invalid replay command", detail: rejected.Message);
+            case ReplayCommandResult.StorageUnavailable:
                 return TypedResults.Problem(statusCode: 503, title: "Paper ledger unavailable", detail: request.Action == "setProfitExit"
                     ? "Profit-policy selection could not commit. Restore storage and retry preparation before playback."
                     : "Replay is paused. Restore ledger storage, then retry Step to commit the pending batch.");

@@ -20,7 +20,10 @@ The identity and content hash of the exact raw response selected for an instrume
 The committed evaluation batches, indexed decisions, paper-state checkpoints and entry-control history belonging to one replay run. An evaluation awaiting commitment remains pending and must be committed before the replay advances again.
 
 **Replay job**:
-The host-visible unit for preparing and playing one historical date: its acquisition attempts, its state and its commands. A job may open several replay runs (restarts, refreshed gaps, policy variants). Whether a command is legal is decided once, from the job's facts, before any transition happens.
+The host-visible unit for preparing and playing one historical date: its acquisition attempts, its state, its phase and its commands. A job may open several replay runs (restarts, refreshed gaps, policy variants). Its phase (acquiring, stopping, publishing) can run ahead of its state: a job can read Cancelled while the acquisition worker has not let go, and a retry sent then is deferred, not lost. Whether a command is legal is decided once, from the job's facts, before any transition happens.
+
+**Operation log**:
+The bounded per-job record of what the host did (commands, acquisition attempts, step commits, failures), kept beside durable replay evidence but separate from its committed batches and checkpoints. Operations recorded before storage is ready are held and written in order once it is.
 
 **Replay run**:
 One execution of a frozen dataset and policy under a selected execution preset. Its identity distinguishes it from restarts, policy variants and other presets, even when their historical dates match.
