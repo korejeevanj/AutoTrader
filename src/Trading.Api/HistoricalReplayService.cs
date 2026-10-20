@@ -16,8 +16,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
     private readonly HistoricalAcquisitionStore store;
     private readonly HistoricalReplayOptions options;
     private readonly KiteHistoricalClient provider;
-    private readonly NseHistoricalContractClient exchange;
-    private readonly PublishedBankInputsClient bankInputs;
+    private readonly HistoricalAcquisition acquisition;
     private readonly TimeProvider clock;
     private readonly string configurationPath;
     private readonly ReplayPaperJournal paperJournal;
@@ -81,7 +80,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
     public HistoricalReplayService(IOptions<HistoricalReplayOptions> options, IWebHostEnvironment environment,
         KiteHistoricalClient provider, TimeProvider clock, NseHistoricalContractClient exchange, PublishedBankInputsClient bankInputs)
     {
-        this.options = options.Value; this.provider = provider; this.clock = clock; this.exchange = exchange; this.bankInputs = bankInputs;
+        this.options = options.Value; this.provider = provider; this.clock = clock;
         store = new(Path.GetFullPath(this.options.RootDirectory, environment.ContentRootPath));
         paperJournal = new(Path.Combine(store.Root, "paper-replay.sqlite"));
         journalInitialization = new(async () =>
@@ -92,6 +91,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
                     paperJournal.Operation(runtime.Job.Id, operation.Run, operation.Preset, operation.Wall, operation.Simulated, operation.Severity, operation.Code, operation.DetailJson);
         });
         configurationPath = Path.GetFullPath(this.options.ReplayConfigurationPath, environment.ContentRootPath);
+        acquisition = new(store, new ProviderHistoricalSources(store, provider, exchange, bankInputs), clock, configurationPath, this.options.AcquirePublishedBankInputs);
         if (Directory.Exists(store.JobsRoot))
             foreach (var file in Directory.EnumerateFiles(store.JobsRoot, "job.json", SearchOption.AllDirectories))
             {
@@ -117,8 +117,8 @@ public sealed partial class HistoricalReplayService : BackgroundService
 
     public async Task<HistoricalReplayJob> PrepareAsync(PrepareHistoricalReplayRequest request)
     {
-        var calendar = Preflight(request.Date);
-        var fingerprint = Fingerprint(request.Date);
+        var calendar = acquisition.Session(request.Date);
+        var fingerprint = acquisition.RequestFingerprint(request.Date);
         await createGate.WaitAsync();
         try
         {
@@ -243,105 +243,10 @@ public sealed partial class HistoricalReplayService : BackgroundService
     private async Task Acquire(RuntimeJob runtime, CancellationToken token)
     {
         var day = runtime.Job.Date;
-        var revision = new HistoricalAcquisitionRevision(store, runtime.Job.Id, day);
-        var frozen = revision.Frozen;
-        var calendar = frozen is null ? Preflight(day) : (Status: runtime.Job.CalendarStatus,
-            Message: "Recovering the frozen historical session.", Open: frozen.Plan.Manifest.MarketOpen, Close: frozen.Plan.Manifest.MarketClose);
-        if (calendar.Status == "MarketClosed")
-        {
-            await Change(runtime, job => job with { State = "MarketClosed", CalendarStatus = calendar.Status, Message = calendar.Message, CanReplay = false });
-            return;
-        }
-        var attempt = runtime.Job.Attempt + 1;
-        Log(runtime, "ACQUISITION_STARTED", new { attempt }, acquisition: true);
-        if (runtime.DiagnosticError is not null) throw new IOException("Operational log storage is unavailable.");
-        var forceRefresh = runtime.Job.Refresh && attempt == 1;
-        await Change(runtime, job =>
-        {
-            runtime.AttemptEvidence = new(attempt, day);
-            return job with { State = "Resolving", CalendarStatus = calendar.Status, Message = "Resolving historical identities and all option expiries/strikes.",
-                Attempt = attempt, CanReplay = false, ReportsAvailable = false, PreparationComplete = false, Instruments = [], Total = 0, Finished = 0 };
-        });
-        var plan = frozen?.Plan ?? store.Resolve(day, calendar.Open, calendar.Close);
-        if (plan is null)
-        {
-            var index = IndexFallback();
-            var cache = forceRefresh ? null : await store.CachedAsync(index, day, calendar.Open, calendar.Close, token);
-            if (cache is null) cache = await Download(index, day, calendar.Open, calendar.Close, token, runtime);
-            if (cache.Rows == 0)
-            {
-                await Change(runtime, job =>
-                {
-                    runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(attempt,
-                        [new(index.Id, index.InstrumentToken, "CashIndex", "Unavailable", 0, false, "EMPTY_RESPONSE")]);
-                    return job with { State = "NoData", Message = "No selected-day index candles returned; not proof of a holiday.", CanReplay = false,
-                        Total = 1, Finished = 1, Instruments = [new(index.Id, index.InstrumentToken, "CashIndex", "Unavailable", 0, false, "EMPTY_RESPONSE")] };
-                });
-                return;
-            }
-            await PreparePricePlayback(runtime, index, cache, calendar.Open, calendar.Close, token);
-            try
-            {
-                await ArchiveCurrent(token, ignoreFailure: true);
-                plan = await store.ResolveNseAsync(exchange, day, calendar.Open, calendar.Close, token);
-            }
-            catch (Exception error) when (error is HttpRequestException or InvalidDataException or IOException or FormatException)
-            { plan = null; }
-            if (plan is null)
-            {
-                await Change(runtime, job => job with { Message = "Historical prices are replayable. No dated NSE contract file was available; strategy and option coverage remain unavailable." });
-                return;
-            }
-        }
-        if (frozen is null)
-        {
-            var replaySettings = ReplayConfiguration.FromJson(await File.ReadAllTextAsync(configurationPath, token));
-            var calendarEvidence = store.Calendar(day.Year);
-            plan = plan with { Manifest = plan.Manifest with { CalendarVerified = calendarEvidence?.Verified == true,
-                CalendarSource = calendarEvidence?.Source, CalendarPublicationEvidence = calendarEvidence?.PublicationEvidence,
-                IncludesAllOptions = plan.AllOptionsCovered } };
-            if (options.AcquirePublishedBankInputs)
-            {
-                try { plan = await store.EnrichBanksAsync(plan, bankInputs, day, token, replaySettings.MaximumWeightSnapshotAgeDays); }
-                catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or FormatException)
-                { plan = plan with { Warnings = plan.Warnings.Append("PUBLISHED_BANK_INPUTS_UNAVAILABLE").ToArray() }; }
-            }
-            var enginePath = Path.GetFullPath(replaySettings.EngineProfile, Path.GetDirectoryName(configurationPath)!);
-            var engineSettings = EngineConfiguration.FromJson(await File.ReadAllTextAsync(enginePath, token));
-            frozen = new(plan, replaySettings.ToJson(), engineSettings.ToJson());
-        }
-        var manifestPath = await revision.AcquireAsync(frozen, new(attempt, runtime.Job.Refresh, runtime.RetryOnlyFailed),
-            (instrument, cancellation) => Download(instrument, day, calendar.Open, calendar.Close, cancellation, runtime), async progress =>
-        {
-            if (progress.Validating)
-            {
-                await Change(runtime, job => job with { State = runtime.PriceOnly ? job.State : "Validating", Message = "Validating candle coverage and freezing replay inputs." });
-                return;
-            }
-            var instruments = progress.Instruments.Select(row => new ReplayInstrumentProgress(row.Id, row.Token,
-                row.Role, row.State, row.Rows, row.Cached, row.Error)).ToArray();
-            if (progress.Finished == 0)
-                await Change(runtime, job =>
-                {
-                    runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(attempt, progress.Instruments);
-                    return job with { State = runtime.PriceOnly ? job.State : "Downloading", CatalogSource = plan.Source,
-                        Warnings = plan.Warnings, Instruments = instruments, Total = instruments.Length, Finished = 0,
-                        Message = "Downloading essential index/futures/bank inputs first, then the full date-valid option catalogue." };
-                });
-            else
-            {
-                var item = instruments[progress.Finished - 1];
-                Log(runtime, "INSTRUMENT_" + item.State.ToUpperInvariant(), new { attempt, item.Id, item.Role, item.Rows, item.Error, item.Cached },
-                    item.State == "Failed" ? "Error" : item.State is "Unavailable" or "Partial" ? "Warning" : "Information", acquisition: true);
-                if (runtime.DiagnosticError is not null) throw new IOException("Operational log storage is unavailable.");
-                await Change(runtime, job =>
-                {
-                    runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(attempt, progress.Instruments);
-                    return job with { Instruments = Array.AsReadOnly(instruments), Finished = progress.Finished,
-                        Message = $"Prepared {progress.Finished} of {instruments.Length} instruments; failures remain explicit." };
-                });
-            }
-        }, token);
+        var outcome = await acquisition.PrepareAsync(new(runtime.Job.Id, day, runtime.Job.CalendarStatus, runtime.Job.Attempt,
+            runtime.Job.Refresh, runtime.RetryOnlyFailed), new AcquisitionProgress(this, runtime), token);
+        if (outcome is not AcquisitionOutcome.Acquired acquired) { await Conclude(runtime, outcome); return; }
+        var (calendar, attempt, frozen, plan, manifestPath) = (acquired.Session, acquired.Attempt, acquired.Frozen, acquired.Plan, acquired.ManifestPath);
         var verdict = PreparationVerdict.Evaluate(ReplayConfiguration.FromJson(frozen.ReplayJson),
             ApplyProfitExit(EngineConfiguration.FromJson(frozen.EngineJson), runtime.Job.ProfitExitOverride), plan, manifestPath, day, calendar.Open, calendar.Close);
         var (replay, engine, dataset, qualification) = (verdict.Replay, verdict.Engine, verdict.Dataset, verdict.Qualification);
@@ -388,16 +293,6 @@ public sealed partial class HistoricalReplayService : BackgroundService
         await ArchiveCurrent(token, ignoreFailure: true);
     }
 
-    private async Task<HistoricalCacheEntry> Download(HistoricalInstrument instrument, DateOnly date, TimeOnly open, TimeOnly close, CancellationToken token, RuntimeJob runtime)
-    {
-        if (instrument.ContinuousTradingClose is { } continuous && continuous < close) close = continuous;
-        var bytes = await provider.HistoricalAsync(instrument.InstrumentToken, date, open, close, token,
-            attempt => Log(runtime, "PROVIDER_REQUEST_ATTEMPT", new { instrument.Id, acquisitionAttempt = runtime.Job.Attempt, attempt.Attempt, attempt.StatusCode, attempt.ElapsedMilliseconds },
-                attempt.StatusCode is >= 200 and < 300 ? "Information" : "Warning", acquisition: true));
-        var cached = await store.CacheAsync(instrument, date, open, close, bytes, clock.GetUtcNow(), token);
-        if (cached.RepairedCorruptSource) Log(runtime, "CACHE_SOURCE_REPAIRED", new { instrument.Id, cached.Sha256 }, "Warning", acquisition: true);
-        return cached;
-    }
     private async Task ArchiveCurrent(CancellationToken token, bool ignoreFailure)
     {
         var local = TimeZoneInfo.ConvertTime(clock.GetUtcNow(), TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata"));
@@ -415,67 +310,6 @@ public sealed partial class HistoricalReplayService : BackgroundService
             await Task.Delay(next - clock.GetUtcNow(), clock, token);
             if (replayRequested) await ArchiveCurrent(token, ignoreFailure: true);
         }
-    }
-    private (string Status, string Message, TimeOnly Open, TimeOnly Close) Preflight(DateOnly date)
-    {
-        var calendar = store.Calendar(date.Year);
-        var special = calendar is { Verified: true } ? calendar.SpecialSessions.SingleOrDefault(session => session.Date == date) : null;
-        var open = special?.Open ?? new TimeOnly(9, 15); var close = special?.Close ?? new TimeOnly(15, 30);
-        var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(clock.GetUtcNow(), TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata")).DateTime);
-        if (date > today || clock.GetUtcNow() < HistoricalAcquisitionStore.Midnight(date, "Asia/Kolkata").Add(close.ToTimeSpan()))
-            throw new ArgumentException("Choose a completed historical session; future/in-progress sessions are unavailable.");
-        if (calendar is { Verified: true } && special is null
-            && (calendar.ClosedDates.Contains(date) || date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday))
-            return ("MarketClosed", "Exchange calendar confirms the selected day was closed.", open, close);
-        return (special is not null ? "SpecialSession" : calendar is { Verified: true } ? "TradingDay" : "CalendarUnverified",
-            "Preparing selected date. Empty data will not be mislabelled as a confirmed market holiday.", open, close);
-    }
-    private string Fingerprint(DateOnly date)
-    {
-        var paths = new List<string> { configurationPath, Path.Combine(store.Root, "calendars", $"{date.Year}.json") };
-        if (File.Exists(configurationPath))
-        {
-            try { paths.Add(Path.GetFullPath(ReplayConfiguration.FromJson(File.ReadAllText(configurationPath)).EngineProfile, Path.GetDirectoryName(configurationPath)!)); }
-            catch (Exception error) when (error is JsonException or ArgumentException) { }
-        }
-        var files = paths.Concat(Directory.Exists(store.CatalogsRoot) ? Directory.EnumerateFiles(store.CatalogsRoot, "*.json") : [])
-            .Concat(new[] { Path.Combine(store.Root, "weights"), Path.Combine(store.Root, "published-weights") }
-                .Where(Directory.Exists).SelectMany(folder => Directory.EnumerateFiles(folder, "*.json", SearchOption.AllDirectories)));
-        return HistoricalAcquisitionStore.SafeName("historical-readiness-v1|" + date.ToString("yyyy-MM-dd") + string.Join("|", files.Order(StringComparer.Ordinal)
-            .Select(path => File.Exists(path) ? KiteCandleImporter.Hash(File.ReadAllBytes(path)) : "missing")));
-    }
-    private static HistoricalInstrument IndexFallback() => new() { Id = "NSE:NIFTY BANK", IndexId = "BANKNIFTY", InstrumentToken = 260105,
-        Role = HistoricalInstrumentRole.CashIndex, File = "index.json", Exchange = "NSE", DefinitionVersion = "index-token-config-v1" };
-    private async Task PreparePricePlayback(RuntimeJob runtime, HistoricalInstrument index, HistoricalCacheEntry cache,
-        TimeOnly open, TimeOnly close, CancellationToken token)
-    {
-        var replay = ReplayConfiguration.FromJson(await File.ReadAllTextAsync(configurationPath, token)) with { EnableCandleResearch = false };
-        var enginePath = Path.GetFullPath(replay.EngineProfile, Path.GetDirectoryName(configurationPath)!);
-        var engine = EngineConfiguration.FromJson(await File.ReadAllTextAsync(enginePath, token));
-        var parsed = KiteCandleImporter.Parse(await File.ReadAllBytesAsync(cache.RawFile, token), index.Id, replay.PublicationLag);
-        var midnight = HistoricalAcquisitionStore.Midnight(runtime.Job.Date, "Asia/Kolkata");
-        var manifest = new HistoricalDatasetManifest { DatasetId = $"BANKNIFTY-{runtime.Job.Date:yyyy-MM-dd}-price-only",
-            TradingDates = [runtime.Job.Date], MarketOpen = open, MarketClose = close, Instruments = [index],
-            Indices = [new("BANKNIFTY", "Bank Nifty", "NSE", "Asia/Kolkata", "Banks", "index-context-v1", midnight, null, false, new(false, false, false))] };
-        var start = midnight.Add(open.ToTimeSpan()); var end = midnight.Add(close.ToTimeSpan());
-        var candles = parsed.Candles.Where(bar => bar.StartUtc >= start && bar.StartUtc < end).ToArray();
-        var expected = (int)(end - start).TotalMinutes; var returned = candles.Select(bar => bar.StartUtc).Distinct().Count();
-        var data = new HistoricalDataset(manifest, candles, parsed.Issues, [parsed.Provenance], HistoricalAcquisitionStore.SafeName("price-only:" + cache.Sha256),
-            [new(index.Id, "CashIndex", expected, returned, Math.Max(0, expected - returned), candles.Count(bar => bar.Volume == 0m), returned == expected ? "Complete" : "Sparse")]);
-        await runtime.Gate.WaitAsync(token);
-        try
-        {
-            runtime.AttemptEvidence = runtime.AttemptEvidence.WithProgress(runtime.Job.Attempt,
-                [new(index.Id, index.InstrumentToken, "CashIndex", cache.Complete ? "Complete" : "Partial", cache.Rows, true, null)])
-                .WithDataset(runtime.Job.Attempt, data);
-            runtime.Dataset = data; runtime.Replay = replay; runtime.Engine = engine; await ResetSession(runtime, recoverCurrent: true);
-            runtime.Job = runtime.Job with { State = "ReadyWithWarnings", CanReplay = true, Mode = "PAPER + REPLAY — PRICE ONLY",
-                Message = "Price playback is ready. Looking up this day's actual NSE contract file in the background; no live-contract substitution.",
-                Warnings = ["HISTORICAL_CATALOGUE_UNAVAILABLE", "PRICE_ONLY_NO_STRATEGY_TRADES"], Total = 1, Finished = 1,
-                Instruments = [new(index.Id, index.InstrumentToken, "CashIndex", cache.Complete ? "Complete" : "Partial", cache.Rows, true, null)] };
-            await Save(runtime);
-        }
-        finally { runtime.Gate.Release(); }
     }
     private async Task Change(RuntimeJob runtime, Func<HistoricalReplayJob, HistoricalReplayJob> update)
     { await runtime.Gate.WaitAsync(); try { runtime.Job = update(runtime.Job); await Save(runtime); } finally { runtime.Gate.Release(); } }

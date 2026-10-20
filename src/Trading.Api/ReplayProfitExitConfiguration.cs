@@ -29,7 +29,7 @@ public sealed partial class HistoricalReplayService
         var paper = runtime.Session.PaperState ?? throw new ArgumentException("Engine-backed paper state is required.");
         if (paper.Positions.Count != 0 || paper.PendingIntents.Count != 0)
             throw new ArgumentException("Close open/pending paper positions before changing policy, or explicitly restart the replay first.");
-        var frozen = HistoricalAcquisitionStore.Read<FrozenAcquisition>(Path.Combine(store.JobsRoot, runtime.Job.Id, "acquisition.json"))
+        var frozen = acquisition.FrozenFor(runtime.Job.Id, runtime.Job.Date)
             ?? throw new ArgumentException("Recover the frozen acquisition before selecting a profit policy.");
         var effective = runtime.Engine ?? throw new ArgumentException("Recover effective Engine settings before selecting a profit policy.");
         // Preserve session qualification and all other effective non-profit settings.
