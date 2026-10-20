@@ -28,8 +28,11 @@ restores a fitted view. Chart labels and time axes use Asia/Kolkata.
 
 The browser's replay display module owns selection and response acceptance for polls
 and commands together. Retired-server or older-revision responses cannot replace
-accepted playback; health must match the acquisition, and lifecycle rows must match
-the replay run. Changing selections cancels obsolete reads/commands; a preparation
+accepted playback. The server publishes one evidence verdict (labels, whether
+preparation is running, readiness, qualification and issue count) with every view, so
+the browser never reconciles it against health; health rows are detail and are shown
+only when they match the job, acquisition attempt and server instance, and lifecycle
+rows must match the replay run. Changing selections cancels obsolete reads/commands; a preparation
 response is still observed so an obsolete remote preparation can be cancelled by ID.
 Rendering consumes accepted evidence without coordinating those protocols.
 
@@ -87,8 +90,11 @@ session bounds and bank continuous-trading close times.
   unknown-option counts and reference-data blockers. Complete candle rows alone do
   not establish readiness. Run-list playback completion and data qualification are
   separate; old records without qualification remain unestablished.
-- Job/attempt identity prevents a response from an older acquisition from qualifying
-  the current one. Failed data-health reads clear the previous positive UI state.
+- The evidence verdict is decided server-side from one snapshot, so an earlier
+  acquisition can never qualify the current one: while a preparation runs (including a
+  failed state still visible before the worker stops) qualification is withheld.
+  Job/attempt identity keeps stale health rows out of the details panel. A failed
+  data-health read hides those rows and shows its error, but does not change the verdict.
   `serverInstanceId` scopes snapshot revisions across API restarts and prevents
   delayed responses from a retired process from overwriting recovered state.
   Completed playback with unresolved evidence is labelled explicitly; human-readable

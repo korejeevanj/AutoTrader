@@ -22,7 +22,8 @@ export interface ReplayDisplaySnapshot {
 }
 type Poll = 'status' | 'view' | 'health' | 'log';
 interface PollScope { abort: AbortController; timer: number | null }
-const preparing = (job: ReplayJob) => job.preparingData === true || ['Queued', 'Resolving', 'Downloading', 'Validating'].includes(job.state);
+// The server decides what counts as preparing; the client never re-derives it from the state name.
+const preparing = (job: ReplayJob) => job.preparingData === true;
 
 /** Owns selection, concurrent reads/commands and accepted evidence. Rendering never reconciles responses. */
 export class ReplayDisplay {
@@ -192,30 +193,17 @@ export class ReplayDisplay {
   }
   private publish() { this.snapshot = this.project(); if (this.active) for (const listener of this.listeners) listener(); }
   private project(): ReplayDisplaySnapshot {
-    const job = this.view?.job; const raw = this.health;
-    const matching = raw && !this.healthError && job && (!raw.jobId || raw.jobId === job.id)
-      && (raw.attempt == null || job.attempt === undefined || raw.attempt === job.attempt)
-      // Legacy health lacks acquisition identity; retain its existing count presentation.
-      && (!raw.jobId || !job.preparationComplete || raw.processed === job.finished && raw.total === job.total)
-      && (!this.view?.serverInstanceId || raw.serverInstanceId === this.view.serverInstanceId) ? raw : null;
-    const isPreparing = !!job && preparing(job);
-    const health = matching && isPreparing ? { ...matching, qualification: null, readiness: 'Acquisition in progress — evidence awaiting validation' } : matching;
-    const pricePreview = this.view?.playbackKind === 'PriceOnly';
-    const qualification = pricePreview ? null : health?.qualification ?? null;
-    const evidenceLabel = job?.state === 'MarketClosed' ? 'Not applicable — market closed'
-      : job?.state === 'AuthenticationRequired' ? 'Evidence blocked — authentication required'
-      : this.healthError || job?.state === 'NoData' ? 'Evidence unavailable'
-      : pricePreview ? job?.preparationComplete ? 'Prepared strategy inputs await Restart replay' : isPreparing ? 'Strategy input preparation in progress' : 'Strategy inputs unavailable'
-      : qualification ? qualification.qualified ? 'Evidence qualified' : 'Evidence incomplete' : 'Evidence awaiting validation';
-    const jobLabel = job?.state === 'Completed' ? pricePreview ? job.preparationComplete ? 'Price preview completed — restart to apply prepared inputs' : 'Price preview completed — strategy inputs unavailable'
-      : this.healthError ? 'Playback completed — evidence unavailable'
-      : qualification ? qualification.qualified ? 'Playback completed — input evidence qualified' : 'Playback completed — evidence incomplete'
-      : 'Playback completed — checking evidence' : job?.state;
-    return { date: this.date, id: this.id, view: this.view, status: this.status, health, qualification, paperLog: this.paperLog,
+    const job = this.view?.job; const raw = this.health; const evidence = this.view?.evidence;
+    // The verdict, labels and qualification come from the accepted view. Health rows are only
+    // detail: they are shown when they belong to this job, attempt and server, and they mirror the verdict.
+    const health = raw && evidence && !this.healthError && job && raw.jobId === job.id && raw.attempt === job.attempt
+      && (!this.view?.serverInstanceId || raw.serverInstanceId === this.view.serverInstanceId)
+      ? { ...raw, qualification: evidence.qualification, readiness: evidence.readiness } : null;
+    return { date: this.date, id: this.id, view: this.view, status: this.status, health, qualification: evidence?.qualification ?? null, paperLog: this.paperLog,
       error: this.error, statusError: this.statusError, healthError: this.healthError, logError: this.logError, notice: this.notice,
       busy: this.preparingRequest || this.commands.size > 0, speed: this.speed,
-      preparing: isPreparing, evidenceLabel, jobLabel,
+      preparing: evidence?.preparing ?? false, evidenceLabel: evidence?.label ?? 'Evidence awaiting validation', jobLabel: evidence?.jobLabel,
       credentialLabel: this.status?.credentialStatus === 'ConfiguredNotVerified' ? 'Credentials configured · current access unchecked' : this.status?.credentialStatus ?? 'Checking…',
-      healthIssues: health ? health.sparse + health.empty + health.failed + health.invalid + (qualification?.issues.length ?? 0) : null };
+      healthIssues: evidence ? evidence.issues : null };
   }
 }

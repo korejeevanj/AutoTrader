@@ -1,15 +1,43 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { ProfitExitSettings, ReplayJob, ReplayView } from '../src/replayApi';
+import type { HistoricalQualification, ProfitExitSettings, ReplayEvidence, ReplayJob, ReplayView } from '../src/replayApi';
+
+// A stand-in for the server: it states what is preparing and publishes one verdict per view.
+const preparingStates = ['Queued', 'Resolving', 'Downloading', 'Validating'];
+let currentQualification: HistoricalQualification | null = null;
+test.beforeEach(() => { currentQualification = null; });
 
 function job(date: string, state = 'Ready'): ReplayJob {
-  return { id: `job-${date}`, date, state, message: 'Historical candles prepared', calendarStatus: 'TradingDay', catalogSource: 'Dated full catalogue',
+  const result: ReplayJob = { id: `job-${date}`, date, state, message: 'Historical candles prepared', calendarStatus: 'TradingDay', catalogSource: 'Dated full catalogue',
     warnings: [], instruments: [{ id: 'NFO:BANKNIFTY', token: 123, role: 'Futures', state: 'Complete', rows: 375, cached: true, error: null }],
-    total: 1, finished: 1, canReplay: state === 'Ready', preparationComplete: state === 'Ready', mode: 'PAPER + REPLAY — CANDLE RESEARCH', run: 1, reportsAvailable: false };
+    total: 1, finished: 1, canReplay: state === 'Ready', preparationComplete: state === 'Ready', mode: 'PAPER + REPLAY — CANDLE RESEARCH', run: 1, reportsAvailable: false, attempt: 1 };
+  let pinned: boolean | undefined;
+  Object.defineProperty(result, 'preparingData', { enumerable: true, configurable: true,
+    get: () => pinned ?? preparingStates.includes(result.state), set: (value: boolean) => { pinned = value; } });
+  return result;
+}
+function evidenceFor(view: ReplayView): ReplayEvidence {
+  const state = view.job.state; const preparing = view.job.preparingData === true; const priceOnly = view.playbackKind === 'PriceOnly';
+  const qualification = preparing || priceOnly ? null : currentQualification;
+  const label = state === 'MarketClosed' ? 'Not applicable — market closed'
+    : state === 'AuthenticationRequired' ? 'Evidence blocked — authentication required'
+    : state === 'NoData' ? 'Evidence unavailable'
+    : priceOnly ? view.job.preparationComplete ? 'Prepared strategy inputs await Restart replay' : preparing ? 'Strategy input preparation in progress' : 'Strategy inputs unavailable'
+    : !qualification ? 'Evidence awaiting validation' : qualification.qualified ? 'Evidence qualified' : 'Evidence incomplete';
+  const jobLabel = state !== 'Completed' ? state
+    : priceOnly ? view.job.preparationComplete ? 'Price preview completed — restart to apply prepared inputs' : 'Price preview completed — strategy inputs unavailable'
+    : !qualification ? 'Playback completed — checking evidence' : qualification.qualified ? 'Playback completed — input evidence qualified' : 'Playback completed — evidence incomplete';
+  const readiness = preparing ? 'Acquisition in progress — evidence awaiting validation'
+    : !view.job.canReplay ? 'Not ready' : priceOnly ? 'Price preview only'
+    : currentQualification?.qualified ? 'Qualified historical inputs — candle model only' : 'Incomplete — diagnostic replay only';
+  return { label, jobLabel, preparing, readiness, issues: qualification?.issues.length ?? 0, qualification };
 }
 function initial(date: string, state = 'Ready'): ReplayView {
-  return { job: job(date, state), simulatedTimeUtc: null, paused: true, complete: false, bars: [], feature: null, constituents: [], decisions: [], trades: [],
+  const view = { job: job(date, state), simulatedTimeUtc: null, paused: true, complete: false, bars: [], feature: null, constituents: [], decisions: [], trades: [],
     openPositions: 0, pendingEntries: 0, netSessionPnl: 0, reportFiles: [],
-    settings: { version: 'paper-policy-v1', preset: 'base', grossStop: 200, maximumNetRisk: 400, candidateBatchSize: 35, spreadTicks: 20, slippageTicks: 2 } };
+    settings: { version: 'paper-policy-v1', preset: 'base', grossStop: 200, maximumNetRisk: 400, candidateBatchSize: 35, spreadTicks: 20, slippageTicks: 2 } } as Omit<ReplayView, 'evidence'> as ReplayView;
+  // The verdict is live, so tests that change the job's state see the server's wording follow.
+  Object.defineProperty(view, 'evidence', { enumerable: true, configurable: true, get: () => evidenceFor(view) });
+  return view;
 }
 function advance(view: ReplayView) {
   view.simulatedTimeUtc = `${view.job.date}T03:46:00Z`;
@@ -36,7 +64,7 @@ async function mockReplay(page: Page) {
     if (path === '/api/replay/runs') return route.fulfill({ json: [...views.values()].map(runInfo) });
     const id = path.split('/')[4] ?? ''; const view = views.get(id);
     if (!view) return route.fulfill({ status: 404, json: { detail: 'Job not found' } });
-    if (path.endsWith('/data-health')) return route.fulfill({ json: { total: view.job.total, processed: view.job.finished, complete: view.job.finished, sparse: 0, empty: 0, failed: 0, invalid: 0, pending: 0, cached: 1, requiredAffected: 0, readiness: 'Ready', instruments: [], warnings: [] } });
+    if (path.endsWith('/data-health')) return route.fulfill({ json: { jobId: view.job.id, attempt: view.job.attempt, total: view.job.total, processed: view.job.finished, complete: view.job.finished, sparse: 0, empty: 0, failed: 0, invalid: 0, pending: 0, cached: 1, requiredAffected: 0, readiness: 'Ready', instruments: [], warnings: [] } });
     if (path.endsWith('/diagnostics')) return route.fulfill({ json: { operations: [], runs: [runInfo(view)] } });
     if (path.endsWith('/paper-log')) return route.fulfill({ json: view.paperRunId ? [{ sequence: 1, runId: view.paperRunId,
       timeUtc: view.simulatedTimeUtc ?? `${view.job.date}T03:45:00Z`, indexId: 'BANKNIFTY', contractId: 'NFO:BANKNIFTYCE',
@@ -382,7 +410,7 @@ test('profit-exit ledger distinguishes the trigger mark from the fill and its sh
 
 test('data health keeps failed requests and empty series visible and exposes decision impact', async ({ page }) => {
   const mock = await mockReplay(page);
-  await page.route('**/data-health', route => route.fulfill({ json: { total: 3, processed: 3, complete: 1, sparse: 0, empty: 1, failed: 1, pending: 0, invalid: 0, cached: 1, requiredAffected: 1, readiness: 'Degraded — evidence gates apply', warnings: ['WEIGHTS_CARRIED_FORWARD'], instruments: [
+  await page.route('**/data-health', route => route.fulfill({ json: { jobId: 'job-2026-10-16', attempt: 1, total: 3, processed: 3, complete: 1, sparse: 0, empty: 1, failed: 1, pending: 0, invalid: 0, cached: 1, requiredAffected: 1, readiness: 'Degraded — evidence gates apply', warnings: ['WEIGHTS_CARRIED_FORWARD'], instruments: [
     { id: 'BANK-A', role: 'Constituent', state: 'Failed', rows: 0, expectedMinutes: 375, missingMinutes: 375, cached: false, error: 'PROVIDER_UNAVAILABLE', impact: 'Bank confirmation is blocked; missing weight is not renormalized.', issues: [], missingIntervals: [] },
     { id: 'OPTION-A', role: 'Call', state: 'Unavailable', rows: 0, expectedMinutes: 375, missingMinutes: 375, cached: true, error: 'EMPTY_RESPONSE', impact: 'Rejects this contract only.', issues: [], missingIntervals: [{ startUtc: '2026-10-16T03:45:00Z', endUtc: '2026-10-16T10:00:00Z' }] },
   ] } }));
@@ -425,7 +453,9 @@ test('processed responses awaiting current-attempt validation stay pending and c
 
 test('incomplete decision evidence is prominent and gap refresh requests a new source revision', async ({ page }) => {
   const mock = await mockReplay(page);
-  await page.route('**/data-health', route => route.fulfill({ json: { total: 2, processed: 2, complete: 1, sparse: 0, empty: 1, failed: 0, invalid: 0, pending: 0, cached: 2, requiredAffected: 0,
+  currentQualification = { qualified: false, decisionTimes: 4, incompleteDecisionTimes: 4, maximumUnknownOptions: 1, firstIncompleteAtUtc: '2026-10-16T04:00:00Z',
+    issues: ['SELECTION_EVIDENCE_INCOMPLETE', 'WEIGHTS_PUBLICATION_UNQUALIFIED'] };
+  await page.route('**/data-health', route => route.fulfill({ json: { jobId: 'job-2026-10-16', attempt: 1, total: 2, processed: 2, complete: 1, sparse: 0, empty: 1, failed: 0, invalid: 0, pending: 0, cached: 2, requiredAffected: 0,
     readiness: 'Incomplete — diagnostic replay only', warnings: [],
     qualification: { qualified: false, decisionTimes: 4, incompleteDecisionTimes: 4, maximumUnknownOptions: 1, firstIncompleteAtUtc: '2026-10-16T04:00:00Z', issues: ['SELECTION_EVIDENCE_INCOMPLETE', 'WEIGHTS_PUBLICATION_UNQUALIFIED'] },
     instruments: [{ id: 'OPTION-A', role: 'Call', state: 'Unavailable', rows: 0, expectedMinutes: 375, missingMinutes: 375, cached: true, error: 'EMPTY_RESPONSE',
@@ -443,6 +473,8 @@ test('incomplete decision evidence is prominent and gap refresh requests a new s
 
 test('completed screenshot state explains unresolved evidence without calling it pending', async ({ page }) => {
   const mock = await mockReplay(page);
+  currentQualification = { qualified: false, decisionTimes: 120, incompleteDecisionTimes: 120, maximumUnknownOptions: 615, firstIncompleteAtUtc: '2026-10-14T04:00:00Z',
+    issues: ['CALENDAR_UNVERIFIED', 'CALENDAR_PUBLICATION_UNQUALIFIED', 'WEIGHTS_PUBLICATION_UNQUALIFIED', 'SELECTION_EVIDENCE_INCOMPLETE'] };
   await page.route('**/api/replay/jobs', async route => {
     const body = route.request().postDataJSON(); const view = initial(body.date);
     view.complete = true; view.job.state = 'Completed'; view.job.reportsAvailable = true;
@@ -450,7 +482,7 @@ test('completed screenshot state explains unresolved evidence without calling it
     view.job.total = view.job.finished = 965;
     mock.views.set(view.job.id, view); await route.fulfill({ status: 202, json: view.job });
   });
-  await page.route('**/data-health', route => route.fulfill({ json: { total: 965, processed: 965, complete: 211, sparse: 259, empty: 495, failed: 0, invalid: 0, pending: 0, cached: 965, requiredAffected: 0,
+  await page.route('**/data-health', route => route.fulfill({ json: { jobId: 'job-2026-10-14', attempt: 1, total: 965, processed: 965, complete: 211, sparse: 259, empty: 495, failed: 0, invalid: 0, pending: 0, cached: 965, requiredAffected: 0,
     readiness: 'Incomplete — diagnostic replay only', warnings: [], instruments: [],
     qualification: { qualified: false, decisionTimes: 120, incompleteDecisionTimes: 120, maximumUnknownOptions: 615, firstIncompleteAtUtc: '2026-10-14T04:00:00Z',
       issues: ['CALENDAR_UNVERIFIED', 'CALENDAR_PUBLICATION_UNQUALIFIED', 'WEIGHTS_PUBLICATION_UNQUALIFIED', 'SELECTION_EVIDENCE_INCOMPLETE'] } } }));
@@ -468,10 +500,11 @@ test('completed screenshot state explains unresolved evidence without calling it
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test('failed data-health refresh clears the previous positive qualification', async ({ page }) => {
+test('a failed data-health refresh hides the stale health rows but keeps the server verdict', async ({ page }) => {
   await mockReplay(page); let failed = false;
+  currentQualification = { qualified: true, decisionTimes: 4, incompleteDecisionTimes: 0, maximumUnknownOptions: 0, firstIncompleteAtUtc: null, issues: [] };
   await page.route('**/data-health', route => route.fulfill(failed ? { status: 503, json: { detail: 'Data-health storage unavailable' } } : { json: {
-    total: 1, processed: 1, complete: 1, sparse: 0, empty: 0, failed: 0, invalid: 0, pending: 0, cached: 1, requiredAffected: 0, readiness: 'Qualified historical inputs — candle model only', warnings: [], instruments: [],
+    jobId: 'job-2026-10-16', attempt: 1, total: 1, processed: 1, complete: 1, sparse: 0, empty: 0, failed: 0, invalid: 0, pending: 0, cached: 1, requiredAffected: 0, readiness: 'Qualified historical inputs — candle model only', warnings: [], instruments: [],
     qualification: { qualified: true, decisionTimes: 4, incompleteDecisionTimes: 0, maximumUnknownOptions: 0, firstIncompleteAtUtc: null, issues: [] } } }));
   await page.goto('/#replay'); await page.getByLabel('Replay date').fill('2026-10-16');
   await expect(page.getByLabel('Replay readiness')).toContainText('3 · Evidence qualified');
@@ -480,11 +513,13 @@ test('failed data-health refresh clears the previous positive qualification', as
   await panel.getByRole('button', { name: 'Refresh data health', exact: true }).click();
   await expect(panel).toContainText('Data-health storage unavailable');
   await expect(panel).not.toContainText('Historical input evidence qualified');
-  await expect(page.getByLabel('Replay readiness')).toContainText('3 · Evidence unavailable');
+  // Only the detail rows failed; the verdict is the server's and is unchanged.
+  await expect(page.getByLabel('Replay readiness')).toContainText('3 · Evidence qualified');
 });
 
 test('a previous acquisition health response cannot qualify a newer attempt', async ({ page }) => {
   const mock = await mockReplay(page);
+  currentQualification = { qualified: true, decisionTimes: 4, incompleteDecisionTimes: 0, maximumUnknownOptions: 0, firstIncompleteAtUtc: null, issues: [] };
   await page.route('**/api/replay/jobs', async route => {
     const body = route.request().postDataJSON(); const view = initial(body.date); view.job.attempt = 1;
     mock.views.set(view.job.id, view); await route.fulfill({ status: 202, json: view.job });
@@ -503,6 +538,7 @@ test('a previous acquisition health response cannot qualify a newer attempt', as
   const panel = page.getByRole('region', { name: 'Dataset health details' });
   await panel.getByRole('button', { name: 'Refresh coverage gaps', exact: true }).click();
   const view = mock.views.get('job-2026-10-16')!;
+  currentQualification = null; // the server has not qualified the second attempt
   view.job.state = 'ReadyWithWarnings'; view.job.preparationComplete = true; view.job.canReplay = true;
   await expect(page.getByRole('region', { name: 'Historical replay preparation' })).toContainText('ReadyWithWarnings');
   await expect(page.getByLabel('Replay readiness')).toContainText('3 · Evidence awaiting validation');

@@ -38,7 +38,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
     public async Task<HistoricalReplayJob> PrepareAsync(PrepareHistoricalReplayRequest request)
     {
         var snapshot = await jobs.PrepareAsync(request.Date, request.Refresh);
-        return HistoricalReplayJob.From(snapshot.Job, snapshot.Job.PreparingData);
+        return HistoricalReplayJob.From(snapshot.Job, ReplayEvidenceVerdict.From(snapshot).Preparing);
     }
 
     /// <summary>Maps the wire command to the module's typed command and returns its typed result.</summary>

@@ -28,6 +28,9 @@ One execution of a frozen dataset and policy under a selected execution preset. 
 **Replay display**:
 The selected historical day's accepted playback, data-health and paper-event evidence. Evidence from an obsolete selection, retired server, earlier acquisition attempt or different replay run is not current display evidence.
 
+**Evidence verdict**:
+The server's single statement of what a replay job's historical evidence amounts to right now: whether preparation is running, the qualification (withheld while it runs and for a price preview), the readiness wording, the labels and the issue count. It is decided from one snapshot and published with the replay display, so presentation never reconciles health against the view.
+
 **Run manifest**:
 The preserved dataset, policy, execution-preset and code provenance identifying a replay run. A manifest identifies the experiment separately from its evaluation batches and results.
 

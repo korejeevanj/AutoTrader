@@ -146,8 +146,9 @@ References: [Kite historical data](https://kite.trade/docs/connect/v3/historical
 - Completed playback is labelled separately from incomplete evidence. Reference
   blockers have plain-language causes and recovery guidance; completed failures
   are not described as merely pending validation.
-- Data-health responses carry job/attempt identity. Failed reads and responses
-  from an earlier acquisition cannot retain a green current qualification.
+- Data-health responses carry job/attempt identity, and each view carries the server's
+  evidence verdict. Responses from an earlier acquisition cannot qualify the current one,
+  and a failed health read hides its rows without turning a qualified verdict unknown.
 - Snapshots and data health also carry a server-instance identity. Revisions are
   ordered within that instance; restart resets are accepted, while delayed
   responses from a retired instance cannot overwrite recovered state.

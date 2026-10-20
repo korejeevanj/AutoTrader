@@ -61,7 +61,7 @@ public sealed record HistoricalReplayView(HistoricalReplayJob Job, DateTimeOffse
     IReadOnlyList<string> ReportFiles, string PlaybackKind = "Strategy", string ChartLabel = "Historical futures context",
     string? ChartInstrumentId = null, IReadOnlyList<ReplayChartInstrument>? ChartInstruments = null,
     Trading.Replay.PaperStateView? Paper = null, string? PaperRunId = null, Trading.Replay.ReplayTiming? Timing = null, long Revision = 0, bool JournalPending = false, string? DiagnosticError = null,
-    ReplayPresetProgress? PresetProgress = null, string? ServerInstanceId = null)
+    ReplayPresetProgress? PresetProgress = null, string? ServerInstanceId = null, Trading.Replay.ReplayEvidenceVerdict? Evidence = null)
 {
     internal IReadOnlyDictionary<string, ReplayUiBar[]> Series { get; init; } = new Dictionary<string, ReplayUiBar[]>();
 }

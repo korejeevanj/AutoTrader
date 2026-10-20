@@ -36,11 +36,10 @@ public sealed partial class HistoricalReplayService
             return new ReplayHealthRow(row.Id, row.Role, row.State, row.Rows, row.ExpectedMinutes, row.MissingMinutes,
                 row.Cached, row.Error, impact, row.Issues, row.MissingIntervals.Select(gap => new ReplayMissingInterval(gap.StartUtc, gap.EndUtc)).ToArray(), recovery);
         }).ToArray();
+        // Health reports the raw evidence; the view's verdict is what withholds it while a preparation runs.
         var totals = evidence.Totals;
         return new(totals.Total, totals.Processed, totals.Complete, totals.Sparse, totals.Empty, totals.Failed, totals.Pending, totals.Cached, totals.RequiredAffected,
-            !snapshot.Job.CanReplay ? "Not ready" : snapshot.PriceOnly ? "Price preview only"
-                : snapshot.Qualification?.Qualified != true ? "Incomplete — diagnostic replay only" : "Qualified historical inputs — candle model only",
-            rows, snapshot.Job.Warnings, totals.Invalid, snapshot.Qualification, snapshot.Job.Id, evidence.Number, serverInstanceId);
+            ReplayEvidenceVerdict.RawReadiness(snapshot), rows, snapshot.Job.Warnings, totals.Invalid, snapshot.Qualification, snapshot.Job.Id, evidence.Number, serverInstanceId);
     }
 
     // Health is rebuilt exactly when an input BuildHealth reads has changed.

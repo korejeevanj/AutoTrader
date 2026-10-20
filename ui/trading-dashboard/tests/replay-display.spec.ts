@@ -1,13 +1,22 @@
 import { expect, test } from '@playwright/test';
 import { ReplayDisplay, type ReplayDisplayTransport, type ReplayDisplayTimers } from '../src/replayDisplay';
-import type { DataHealth, PaperLogRow, ProfitExitSettings, ReplayJob, ReplayStatus, ReplayView } from '../src/replayApi';
+import type { DataHealth, HistoricalQualification, PaperLogRow, ProfitExitSettings, ReplayEvidence, ReplayJob, ReplayStatus, ReplayView } from '../src/replayApi';
 
 const date = '2026-10-16';
 const jobId = 'job-2026-10-16';
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+const qualified: HistoricalQualification = { qualified: true, decisionTimes: 4, incompleteDecisionTimes: 0, maximumUnknownOptions: 0, firstIncompleteAtUtc: null, issues: [] };
+
+// The verdict the server publishes with every view; the display never derives it.
+function evidence(overrides: Partial<ReplayEvidence> = {}): ReplayEvidence {
+  return { label: 'Evidence qualified', jobLabel: 'Ready', preparing: false, readiness: 'Qualified historical inputs — candle model only',
+    issues: 0, qualification: qualified, ...overrides };
+}
+const acquiring = (): ReplayEvidence => evidence({ label: 'Evidence awaiting validation', jobLabel: 'Downloading', preparing: true,
+  readiness: 'Acquisition in progress — evidence awaiting validation', qualification: null });
 
 function view(revision: number, serverInstanceId = 'server-A', selectedDate = date): ReplayView {
-  return { serverInstanceId, revision, job: { id: `job-${selectedDate}`, date: selectedDate, state: 'Ready', message: `Revision ${revision}`,
+  return { evidence: evidence(), serverInstanceId, revision, job: { id: `job-${selectedDate}`, date: selectedDate, state: 'Ready', message: `Revision ${revision}`,
     calendarStatus: 'TradingDay', catalogSource: 'Fixture catalogue', warnings: [], instruments: [], total: 1, finished: 1,
     canReplay: true, mode: 'PAPER + REPLAY', run: 1, reportsAvailable: false, preparationComplete: true, attempt: 1 },
     simulatedTimeUtc: null, paused: true, complete: false, bars: [], feature: null, constituents: [], decisions: [], trades: [],
@@ -153,11 +162,13 @@ test('a server restart accepts reset revisions and rejects retired-server comman
   try {
     transport.snapshots[0]!.resolve(view(100)); transport.health[0]!.resolve(health()); await settle();
     expect(display.getSnapshot().qualification?.qualified).toBe(true);
+    expect(display.getSnapshot().health?.serverInstanceId).toBe('server-A');
     const oldCommand = display.command('step'); const oldError = display.command('setSpeed', 1);
     timers.advance(1500);
     transport.snapshots[1]!.resolve(view(1, 'server-B')); await settle();
-    expect(display.getSnapshot().qualification).toBeNull();
+    expect(display.getSnapshot().health).toBeNull(); // rows from the retired server are never shown
     transport.health.at(-1)!.resolve(health(1, 'server-B')); await settle();
+    expect(display.getSnapshot().health?.serverInstanceId).toBe('server-B');
     transport.commands[0]!.resolve(view(101)); transport.commands[1]!.reject(new Error('Retired-server failure'));
     await Promise.all([oldCommand, oldError]);
     expect(display.getSnapshot().view?.serverInstanceId).toBe('server-B');
@@ -171,19 +182,29 @@ test('a server restart accepts reset revisions and rejects retired-server comman
   } finally { display.stop(); }
 });
 
-test('qualification follows the current acquisition and a failed refresh clears positive evidence', async () => {
+test('the verdict comes from the accepted view, so health rows can neither qualify nor unqualify a job', async () => {
   const { display, transport } = harness();
   try {
-    transport.snapshots[0]!.resolve(view(1)); transport.health[0]!.resolve(health()); await settle();
-    expect(display.getSnapshot().qualification?.qualified).toBe(true);
+    transport.snapshots[0]!.resolve(view(1)); await settle();
+    expect(display.getSnapshot().qualification?.qualified).toBe(true); // no health response has arrived
+    expect(display.getSnapshot().evidenceLabel).toBe('Evidence qualified');
+    expect(display.getSnapshot().health).toBeNull();
+    transport.health[0]!.resolve(health()); await settle();
+    expect(display.getSnapshot().health?.readiness).toBe(evidence().readiness);
+
     const refresh = display.command('refreshGaps');
     const downloading = view(2); downloading.job.attempt = 2; downloading.job.state = 'Downloading';
-    downloading.job.preparationComplete = false; downloading.job.canReplay = false;
+    downloading.job.preparationComplete = false; downloading.job.canReplay = false; downloading.job.preparingData = true;
+    downloading.evidence = acquiring();
     transport.commands[0]!.resolve(downloading); await refresh;
     expect(display.getSnapshot().qualification).toBeNull();
+    expect(display.getSnapshot().preparing).toBe(true);
+    expect(display.getSnapshot().evidenceLabel).toBe('Evidence awaiting validation');
+    expect(display.getSnapshot().jobLabel).toBe('Downloading');
+    expect(display.getSnapshot().health).toBeNull(); // the earlier attempt's rows no longer describe this job
 
-    const wrongAttempt = health(); delete wrongAttempt.jobId;
-    transport.health.at(-1)!.resolve(wrongAttempt); await settle();
+    const wrongJob = health(2); delete wrongJob.jobId;
+    transport.health.at(-1)!.resolve(wrongJob); await settle();
     expect(display.getSnapshot().health).toBeNull();
     display.retry(); transport.health.at(-1)!.resolve(health(2)); await settle();
     expect(display.getSnapshot().qualification).toBeNull();
@@ -194,8 +215,24 @@ test('qualification follows the current acquisition and a failed refresh clears 
     expect(display.getSnapshot().qualification?.qualified).toBe(true);
     display.retry(); transport.health.at(-1)!.reject(new Error('Health storage unavailable')); await settle();
     expect(display.getSnapshot().health).toBeNull();
-    expect(display.getSnapshot().qualification).toBeNull();
-    expect(display.getSnapshot().evidenceLabel).toBe('Evidence unavailable');
+    expect(display.getSnapshot().healthError).toBe('Health storage unavailable');
+    expect(display.getSnapshot().qualification?.qualified).toBe(true); // the rows failed, the verdict did not
+    expect(display.getSnapshot().evidenceLabel).toBe('Evidence qualified');
+  } finally { display.stop(); }
+});
+
+test('an older view cannot replace a newer verdict and the issue count follows the accepted view', async () => {
+  const { display, transport, timers } = harness();
+  try {
+    const incomplete = view(5); incomplete.evidence = evidence({ label: 'Evidence incomplete', jobLabel: 'ReadyWithWarnings', issues: 7,
+      readiness: 'Incomplete — diagnostic replay only', qualification: { ...qualified, qualified: false, incompleteDecisionTimes: 4 } });
+    transport.snapshots[0]!.resolve(incomplete); await settle();
+    expect(display.getSnapshot().evidenceLabel).toBe('Evidence incomplete');
+    expect(display.getSnapshot().healthIssues).toBe(7);
+    timers.advance(1500);
+    transport.snapshots[1]!.resolve(view(4)); await settle(); // stale revision carrying a rosier verdict
+    expect(display.getSnapshot().evidenceLabel).toBe('Evidence incomplete');
+    expect(display.getSnapshot().qualification?.qualified).toBe(false);
   } finally { display.stop(); }
 });
 
@@ -227,7 +264,7 @@ test('obsolete preparations are cancelled without replacing the selected day or 
     const selected = view(1, 'server-A', '2026-10-12');
     transport.preparations[1]!.resolve(selected.job); await second;
     transport.snapshots.at(-1)!.resolve(selected); await settle();
-    const obsolete = view(1, 'server-A', '2026-10-09'); obsolete.job.state = 'Queued'; obsolete.job.canReplay = false;
+    const obsolete = view(1, 'server-A', '2026-10-09'); obsolete.job.state = 'Queued'; obsolete.job.canReplay = false; obsolete.job.preparingData = true;
     transport.preparations[0]!.resolve(obsolete.job); await settle();
     expect(transport.commands.at(-1)?.action).toBe('cancelPreparation');
     expect(transport.commands.at(-1)?.id).toBe('job-2026-10-09');
@@ -266,7 +303,7 @@ test('a selection superseded in browser storage finishes locally without overwri
     const choose = display.choose('2026-10-09');
     storage.setItem('replay-selection', 'another-tab'); storage.setItem('replay-date', '2026-10-12');
     storage.setItem('replay-job', 'job-2026-10-12');
-    const obsolete = view(1, 'server-A', '2026-10-09'); obsolete.job.state = 'Queued';
+    const obsolete = view(1, 'server-A', '2026-10-09'); obsolete.job.state = 'Queued'; obsolete.job.preparingData = true;
     transport.preparations[0]!.resolve(obsolete.job); await settle();
     transport.commands.at(-1)!.resolve(obsolete); await choose;
     expect(display.getSnapshot().busy).toBe(false);

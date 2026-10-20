@@ -448,6 +448,24 @@ public sealed class HistoricalApiTests
     }
 
     [Fact]
+    public async Task The_view_carries_one_evidence_verdict_and_preparing_data_agrees_with_it()
+    {
+        await using var fixture = new HistoricalApiFixture(); fixture.Start();
+        var job = await fixture.Prepare();
+
+        var settled = await fixture.Wait(job.Id, view => view.Job.PreparationComplete && !view.Job.PreparingData);
+
+        Assert.NotNull(settled.Evidence);
+        Assert.False(settled.Evidence!.Preparing);
+        Assert.Equal(settled.Job.State, settled.Evidence.JobLabel);
+        Assert.NotNull(settled.Evidence.Qualification);
+        Assert.Equal(settled.Evidence.Qualification!.Qualified ? "Evidence qualified" : "Evidence incomplete", settled.Evidence.Label);
+        var health = await fixture.Client.GetFromJsonAsync<ReplayDataHealth>($"/api/replay/jobs/{job.Id}/data-health");
+        Assert.Equal(job.Id, health!.JobId);
+        Assert.Equal(settled.Job.Attempt, health.Attempt);
+    }
+
+    [Fact]
     public async Task Successful_empty_option_responses_are_coverage_not_repeated_download_failures()
     {
         await using var fixture = new HistoricalApiFixture();

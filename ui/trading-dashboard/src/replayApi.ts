@@ -17,7 +17,12 @@ export interface ReplayDirectionalEvidence {
   confirmingCount: number | null; opposingCount: number | null; neutralCount: number | null;
   topThreeConfirmingWeightPercent: number | null; minimumConfirmingConstituents: number | null; reasons: string[];
 }
+/** The server's one verdict on a job's evidence: presentation never reconciles health against the view. */
+export interface ReplayEvidence {
+  label: string; jobLabel: string; preparing: boolean; readiness: string; issues: number; qualification: HistoricalQualification | null;
+}
 export interface ReplayView {
+  evidence: ReplayEvidence;
   serverInstanceId?: string | null;
   presetProgress?: { id: string; number: number; total: number; allPresets: boolean } | null;
   journalPending?: boolean;
@@ -68,6 +73,12 @@ const profitPolicy = (v: unknown): v is ProfitExitSettings => object(v) && text(
 const profitEvidence = (v: unknown, clock: unknown): v is ProfitExitEvidence => object(v) && profitPolicy(v.policy)
   && nullableNumber(v.peakNetLiquidationPnl) && nullableNumber(v.triggerNetLiquidationPnl) && nullableNumber(v.triggerThreshold) && nullableNumber(v.realizedShortfall)
   && nullableText(v.triggeredAtUtc) && (v.triggeredAtUtc === null || text(clock) && Date.parse(v.triggeredAtUtc) <= Date.parse(clock));
+const qualification = (v: unknown): v is HistoricalQualification => object(v) && typeof v.qualified === 'boolean'
+  && number(v.decisionTimes) && number(v.incompleteDecisionTimes) && number(v.maximumUnknownOptions)
+  && nullableText(v.firstIncompleteAtUtc) && strings(v.issues);
+const evidence = (v: unknown): v is ReplayEvidence => object(v) && text(v.label) && text(v.jobLabel) && typeof v.preparing === 'boolean'
+  && text(v.readiness) && number(v.issues) && Number.isSafeInteger(v.issues) && v.issues >= 0
+  && (v.qualification === null || qualification(v.qualification));
 function job(v: unknown): v is ReplayJob {
   return object(v) && ['id', 'date', 'state', 'message', 'calendarStatus', 'mode'].every(key => text(v[key]))
     && (v.attempt === undefined || number(v.attempt) && Number.isSafeInteger(v.attempt) && v.attempt >= 0)
@@ -77,7 +88,7 @@ function job(v: unknown): v is ReplayJob {
       && number(row.rows) && typeof row.cached === 'boolean' && nullableText(row.error));
 }
 function view(v: unknown): v is ReplayView {
-  if (!object(v) || !job(v.job) || !nullableText(v.simulatedTimeUtc) || typeof v.paused !== 'boolean' || typeof v.complete !== 'boolean'
+  if (!object(v) || !evidence(v.evidence) || !job(v.job) || !nullableText(v.simulatedTimeUtc) || typeof v.paused !== 'boolean' || typeof v.complete !== 'boolean'
     || !number(v.openPositions) || !number(v.pendingEntries) || !nullableNumber(v.netSessionPnl) || !strings(v.reportFiles)) return false;
   if (v.playbackKind !== undefined && v.playbackKind !== 'Strategy' && v.playbackKind !== 'PriceOnly') return false;
   if (v.revision !== undefined && (!number(v.revision) || !Number.isSafeInteger(v.revision) || v.revision < 0)) return false;
@@ -167,9 +178,7 @@ export const readDataHealth = (id: string, signal: AbortSignal) => request(`/api
   && (v.serverInstanceId === undefined || v.serverInstanceId === null || text(v.serverInstanceId) && v.serverInstanceId.length > 0)
   && (v.attempt === undefined || v.attempt === null || number(v.attempt) && Number.isSafeInteger(v.attempt) && v.attempt >= 0)
   && ['total', 'processed', 'complete', 'sparse', 'empty', 'failed', 'pending', 'cached', 'requiredAffected', 'invalid'].every(key => number(v[key])) && text(v.readiness) && strings(v.warnings)
-  && (v.qualification === undefined || v.qualification === null || object(v.qualification) && typeof v.qualification.qualified === 'boolean'
-    && number(v.qualification.decisionTimes) && number(v.qualification.incompleteDecisionTimes) && number(v.qualification.maximumUnknownOptions)
-    && nullableText(v.qualification.firstIncompleteAtUtc) && strings(v.qualification.issues))
+  && (v.qualification === undefined || v.qualification === null || qualification(v.qualification))
   && Array.isArray(v.instruments) && v.instruments.every(row => object(row) && text(row.id) && text(row.role) && text(row.state) && number(row.rows) && nullableNumber(row.expectedMinutes) && nullableNumber(row.missingMinutes) && text(row.impact) && nullableText(row.error)
     && (row.recoveryAction === undefined || text(row.recoveryAction)) && Array.isArray(row.issues) && Array.isArray(row.missingIntervals)), signal);
 export const readDiagnostics = (id: string, signal: AbortSignal) => request(`/api/replay/jobs/${encodeURIComponent(id)}/diagnostics`, (v): v is RunDiagnostics => object(v) && Array.isArray(v.runs) && v.runs.every(runInfo)

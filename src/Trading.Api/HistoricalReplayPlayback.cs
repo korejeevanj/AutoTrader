@@ -60,7 +60,8 @@ public sealed partial class HistoricalReplayService
             directional.ConfirmingCount, directional.OpposingCount, directional.NeutralCount, directional.TopThreeConfirmingWeightPercent,
             profile?.MinimumConfirmingConstituents, directional.Gates.Where(gate => gate.Outcome is Trading.Engine.GateOutcome.FAIL or Trading.Engine.GateOutcome.UNKNOWN)
                 .Select(gate => gate.Code).Distinct(StringComparer.Ordinal).ToArray());
-        return new HistoricalReplayView(HistoricalReplayJob.From(snapshot.Job, preparingData: snapshot.Acquiring), time, snapshot.Paused, snapshot.Complete,
+        var verdict = ReplayEvidenceVerdict.From(snapshot);
+        return new HistoricalReplayView(HistoricalReplayJob.From(snapshot.Job, preparingData: verdict.Preparing), time, snapshot.Paused, snapshot.Complete,
             bars, latest is null ? null : new(latest.OpeningHigh, latest.OpeningLow, latest.Vwap, latest.AboveWeight,
                  latest.BelowWeight, latest.MissingWeight, latest.Direction?.ToString(), latest.SetupId, directionalView),
             snapshot.Constituents,
@@ -77,6 +78,6 @@ public sealed partial class HistoricalReplayService
                 ? "Bank Nifty index — historical prices (no traded-volume VWAP)" : future.Id + (future.Verified ? " — historical candles" : " — historical mapping unverified"), future?.Id,
             series.Choices, snapshot.Paper, snapshot.PaperRunId, snapshot.Timing, snapshot.Revision,
             snapshot.JournalPending, snapshot.FailureNotice,
-            snapshot.PriceOnly || preset is null ? null : new(preset.Id, snapshot.PresetIndex + 1, replay!.Presets.Count, snapshot.AllPresets), serverInstanceId) { Series = series.Bars };
+            snapshot.PriceOnly || preset is null ? null : new(preset.Id, snapshot.PresetIndex + 1, replay!.Presets.Count, snapshot.AllPresets), serverInstanceId, verdict) { Series = series.Bars };
     }
 }
