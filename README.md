@@ -14,7 +14,7 @@ Missing opening history, reference evidence, costs or risk qualification remain
 visible entry blockers. The initial ₹400 modeled-risk ceiling can reject every
 candidate; it is never widened to obtain a demonstration trade.
 
-Raw messages and immutable run manifests live in `data/live/market.sqlite`; paper
+Raw messages and immutable run manifests live in `data/live/market-YYYY-MM-DD.sqlite` (one file per IST trading date, older closed days compressed to `.sqlite.br`); paper
 checkpoints, fills and compressed decision history live in `data/live/paper.sqlite`.
 Separate quote-replay results live in `data/live/quote-replays.sqlite`. These are
 distinct from candle research and synthetic plans. The Development-only **Run

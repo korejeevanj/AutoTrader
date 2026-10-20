@@ -9,6 +9,8 @@ namespace Trading.Data;
 // Market and paper stores can use separate database paths to isolate the high-volume writer.
 public sealed class SqliteQuoteStore(string path)
 {
+    public string FilePath => path;
+
     private SqliteConnection Open()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -121,6 +123,13 @@ public sealed class SqliteQuoteStore(string path)
             result.Add(document.RootElement.Clone());
         }
         return result;
+    }
+
+    // Folds committed WAL pages into the main file so it can be copied or archived on its own.
+    public void FoldWal()
+    {
+        using var connection = Open(); using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)"; command.ExecuteNonQuery();
     }
 
     public IReadOnlyList<RecordedQuoteRun> Runs()

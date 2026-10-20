@@ -114,9 +114,16 @@ from authenticated live evidence. Zero qualifying strategy trades is valid.
 
 Default API-relative `LivePaper:RootDirectory=../../data/live` contains:
 
-- `market.sqlite`: immutable run manifests and ordered original market/control BLOBs,
-  master CSV, membership CSV and monthly weight ZIP. Duplicate receptions are retained;
-  identical observations are not reapplied as newly executable quotes.
+- `market-YYYY-MM-DD.sqlite` (one file per IST trading date): immutable run manifests and
+  ordered original market/control BLOBs, master CSV, membership CSV and monthly weight
+  ZIP. Duplicate receptions are retained; identical observations are not reapplied as
+  newly executable quotes. The earlier single `market.sqlite` stays listed and readable;
+  nothing is migrated and it is never archived.
+- `market-YYYY-MM-DD.sqlite.br` (+ `.br.runs.json` run listing): a fully closed day older
+  than the two newest day files, Brotli-compressed once per IST date outside 08:00–15:45.
+  The raw file is removed only after the archive decompresses to the identical SHA-256;
+  a day holding an unclosed run is never archived. Replay of an archived run decompresses
+  that one day into `cache/` on demand. `LivePaper:ArchiveClosedDays=false` disables it.
 - `paper.sqlite`: acknowledged account/intents/positions/attempts, lifecycle events,
   model assessment inputs/scenario sidecars, checkpoints and compressed append-only
   candidate/position decision batches. The paged JSON link reads committed history.
@@ -145,6 +152,16 @@ recording uses its committed prefix and discloses that it is still open. Crash/g
 recordings remain qualified as incomplete; they cannot establish exact reproduction
 of events never committed. Replay preserves the declared delay and later-receipt
 requirements at maximum processing speed, using simulated time rather than sleeping.
+
+### Expected size (synthetic estimate, not yet measured live)
+
+About 44 instruments in `full` mode (184-byte depth packets; the index is 32 bytes).
+At ~1 update per instrument per second over 09:15–15:30, a synthetic stream of that shape
+measured roughly **225 MB per day** in SQLite (about 1 KB of row overhead per message
+beyond the raw payload) and **~55 MB per day** Brotli-compressed. Faster real ticking can
+multiply this several times. The live view reports the open file size (database plus WAL)
+and free disk, and raises `LOW_DISK_SPACE` below 5 GiB. Replace this estimate with the
+measured figure after the first full session.
 
 ## Experimental option assessment
 

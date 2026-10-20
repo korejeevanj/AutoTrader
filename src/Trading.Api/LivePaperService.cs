@@ -16,6 +16,7 @@ namespace Trading.Api;
 public sealed class LivePaperOptions
 {
     public bool ConnectOnStartup { get; set; }
+    public bool ArchiveClosedDays { get; set; } = true;
     public string RootDirectory { get; set; } = "../../data/live";
     public string EngineProfile { get; set; } = "../Trading.Engine/engine.paper.example.json";
     public string FeeConfiguration { get; set; } = "../Trading.Replay/replay.example.json";
@@ -27,7 +28,8 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     IReadOnlyList<HistoricalInstrument> Instruments, IReadOnlyList<string> Universe, IReadOnlyList<MarketTick> Quotes,
     IReadOnlyList<HistoricalCandle> FuturesBars, IReadOnlyList<CandidateAssessment> Candidates, IReadOnlyList<LiveQuoteFreshness> QuoteFreshness,
     QuotePaperState? Paper, decimal? SessionNet, PositionDecision? PositionDecision, IReadOnlyList<GateResult> ContextGates,
-    DirectionalEvidence? Directional, bool PaperPersistenceHealthy, bool PaperPersistencePending);
+    DirectionalEvidence? Directional, bool PaperPersistenceHealthy, bool PaperPersistencePending,
+    long MarketRecordingBytes, long FreeDiskBytes, string? ArchiveError);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
 public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null);
@@ -45,10 +47,11 @@ public sealed class LivePaperService : BackgroundService
     private readonly IOptionsMonitor<KiteCredentialOptions> credentials;
     private readonly TimeProvider clock;
     private readonly IHubContext<DashboardHub> hub;
-    private readonly SqliteQuoteStore marketStore;
+    private readonly MarketStoreSet markets;
     private readonly SqliteQuoteStore paperStore;
     private readonly SqliteQuoteStore replayStore;
     private readonly string root;
+    private SqliteQuoteStore? marketStore; // the open run's trading-date file
     private QuoteTradingSession? session;
     private BufferedQuoteRecorder? recorder;
     private BufferedPaperCheckpoints? paperWriter;
@@ -63,6 +66,11 @@ public sealed class LivePaperService : BackgroundService
     private DateTimeOffset lastCheckpoint;
     private CancellationToken stopping;
     private CancellationTokenSource? connectionLifetime;
+    private string? archiveError;
+    private DateOnly? archiveAttemptedOn;
+    private (long Market, long Free) storageSample;
+    private DateTimeOffset storageSampledAt;
+    private const long LowDiskBytes = 5L * 1024 * 1024 * 1024;
     private static readonly string CodeVersion = QuoteTradingSession.Key(string.Join(":",
         typeof(LivePaperService).Assembly.ManifestModule.ModuleVersionId,
         typeof(QuoteTradingSession).Assembly.ManifestModule.ModuleVersionId,
@@ -79,24 +87,63 @@ public sealed class LivePaperService : BackgroundService
         this.options = options.Value; this.environment = environment; this.kite = kite; this.published = published;
         this.clients = clients; this.credentials = credentials; this.clock = clock; this.hub = hub;
         root = Path.GetFullPath(this.options.RootDirectory, environment.ContentRootPath);
-        marketStore = new(Path.Combine(root, "market.sqlite")); paperStore = new(Path.Combine(root, "paper.sqlite"));
+        markets = new(root); paperStore = new(Path.Combine(root, "paper.sqlite"));
         replayStore = new(Path.Combine(root, "quote-replays.sqlite"));
     }
 
     public LivePaperView View()
     {
-        lock (gate) return new("PAPER + LIVE DATA", status, paperWriter?.Failure ?? errorCode, kite.CredentialStatus,
+        lock (gate)
+        {
+            var storage = Storage();
+            return new("PAPER + LIVE DATA", status, paperWriter?.Failure ?? errorCode, kite.CredentialStatus,
             session?.Manifest.Id, session?.Manifest.TradingDate, session?.CurrentTimeUtc, session?.FeedConnected ?? false,
             session?.AutoEnabled == true && acknowledged?.AutoEnabled == true, recorder?.Healthy == true && session?.RecorderHealthy == true,
             session?.RecordingIncomplete ?? false, sequence, recorder?.DurableSequence ?? 0, recorder?.QueueDepth ?? 0,
-            recorder?.LagMilliseconds ?? 0, session is null ? [] : session.Manifest.ReferenceIssues.Concat(session.Issues).Distinct().ToArray(),
+            recorder?.LagMilliseconds ?? 0, (session is null ? [] : session.Manifest.ReferenceIssues.Concat(session.Issues)
+                .Concat(storage.Free is > 0 and < LowDiskBytes ? ["LOW_DISK_SPACE"] : [])).Distinct().ToArray(),
             session?.Manifest.Instruments.Where(item => item.Role is not (HistoricalInstrumentRole.Call or HistoricalInstrumentRole.Put)
                 || session.Universe.Contains(item.Id)).ToArray() ?? [], session?.Universe ?? [], session?.Quotes ?? [],
             session?.FuturesBars ?? [], session?.Candidates ?? [], Freshness(), Volatile.Read(ref acknowledged)?.Paper,
             ReferenceEquals(session?.Paper, acknowledged?.Paper) ? session?.SessionNet : null,
             acknowledged?.Paper.Position?.Approval.Id == session?.Paper.Position?.Approval.Id ? session?.LastPositionDecision : null,
-            session?.ContextGates ?? [], session?.Directional, paperWriter?.Healthy == true, !lastCommit.IsCompleted);
+            session?.ContextGates ?? [], session?.Directional, paperWriter?.Healthy == true, !lastCommit.IsCompleted,
+            storage.Market, storage.Free, archiveError);
+        }
     }
+
+    // Open recording size (database plus WAL) and free disk, refreshed at most every five seconds under the gate.
+    private (long Market, long Free) Storage()
+    {
+        var now = clock.GetUtcNow();
+        if (now - storageSampledAt < TimeSpan.FromSeconds(5)) return storageSample;
+        storageSampledAt = now;
+        try
+        {
+            var size = marketStore?.FilePath is { } path ? new[] { path, path + "-wal" }.Where(File.Exists).Sum(file => new FileInfo(file).Length) : 0;
+            var anchor = root; while (!Directory.Exists(anchor) && Path.GetDirectoryName(anchor) is { } parent) anchor = parent;
+            storageSample = (size, new DriveInfo(Path.GetPathRoot(anchor)!).AvailableFreeSpace);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { storageSample = (0, 0); }
+        return storageSample;
+    }
+
+    // Once per IST date, outside 08:00–15:45 so compression never competes with the open or the session.
+    private void ArchiveWhenIdle(DateTimeOffset now)
+    {
+        var local = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata"));
+        if (!options.ArchiveClosedDays || archiveAttemptedOn == DateOnly.FromDateTime(local.DateTime)
+            || local.TimeOfDay is { } time && time >= TimeSpan.FromHours(8) && time < new TimeSpan(15, 45, 0)) return;
+        archiveAttemptedOn = DateOnly.FromDateTime(local.DateTime); ArchiveOldDays();
+    }
+
+    // Compresses closed trading-date files beyond the newest two. Runs off the feed path; a failure is shown, never fatal.
+    private void ArchiveOldDays() => _ = Task.Run(() =>
+    {
+        try { markets.ArchiveClosedDays(); lock (gate) archiveError = null; }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+        { lock (gate) archiveError = "MARKET_ARCHIVE_FAILED"; }
+    });
 
     public async Task CommandAsync(QuoteControl command, CancellationToken token = default)
     {
@@ -133,6 +180,7 @@ public sealed class LivePaperService : BackgroundService
                     {
                         session = new(manifest, checkpoint, CodeVersion);
                         acknowledged = checkpoint; paperWriter = new(paperStore);
+                        marketStore = markets.StoreOf(previous.Id);
                         session.RecoverTail(marketStore.Read(previous.Id));
                         sequence = Math.Max(previous.LastSequence, marketStore.Runs().Single(run => run.Id == previous.Id).LastSequence);
                         recorder = new(marketStore, clock);
@@ -150,6 +198,7 @@ public sealed class LivePaperService : BackgroundService
             {
                 lock (gate)
                 {
+                    ArchiveWhenIdle(clock.GetUtcNow());
                     if (session is not null && recorder is not null && status is not ("StorageFault" or "RollingOver"))
                     {
                         if (NeedsNewReferences()) connectionLifetime?.Cancel();
@@ -234,6 +283,7 @@ public sealed class LivePaperService : BackgroundService
             var json = JsonSerializer.Serialize(manifest, QuoteTradingSession.Json);
             lock (gate)
             {
+                marketStore = markets.ForDate(date);
                 marketStore.Create(id, captured, json); paperStore.Create(id, captured, json);
                 session = new(manifest, executingCodeVersion: CodeVersion); sequence = 0; recorder = new(marketStore, clock);
                 paperWriter = new(paperStore); acknowledged = null; lastCheckpoint = default;
@@ -278,8 +328,8 @@ public sealed class LivePaperService : BackgroundService
                         { status = "StorageFault"; errorCode = "SESSION_CLOSE_INCOMPLETE_DRAIN"; session.Degrade(errorCode); return; }
                         var checkpoint = JsonSerializer.Serialize(session.Checkpoint(), QuoteTradingSession.Json);
                         paperStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
-                        marketStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
-                        session = null; recorder = null; paperWriter = null; acknowledged = null;
+                        marketStore!.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
+                        session = null; recorder = null; paperWriter = null; acknowledged = null; marketStore = null;
                     }
                     await PrepareAsync(token);
                     }
@@ -345,9 +395,8 @@ public sealed class LivePaperService : BackgroundService
         finally { lock (gate) { connectionLifetime = null; if (session is not null && status != "StorageFault") PublishLocked("Disconnected", Encoding.UTF8.GetBytes("HOST_FEED_STOPPED")); } }
     }
 
-    public IReadOnlyList<object> Runs() => File.Exists(Path.Combine(root, "market.sqlite"))
-        ? marketStore.Runs().Select(run => (object)new { run.Id, run.CreatedAtUtc, run.LastSequence, run.Closed,
-            engineJson = JsonSerializer.Deserialize<QuoteRunManifest>(run.ManifestJson, QuoteTradingSession.Json)!.EngineJson }).ToArray() : [];
+    public IReadOnlyList<object> Runs() => markets.Runs().Select(run => (object)new { run.Id, run.CreatedAtUtc, run.LastSequence, run.Closed,
+            engineJson = JsonSerializer.Deserialize<QuoteRunManifest>(run.ManifestJson, QuoteTradingSession.Json)!.EngineJson }).ToArray();
 
     public IReadOnlyList<JsonElement> Decisions(string id, long after, int limit) => paperStore.Decisions(id, after, limit);
 
@@ -355,16 +404,17 @@ public sealed class LivePaperService : BackgroundService
     {
         var template = QuoteRehearsal.Manifest();
         var manifest = template with { Id = "synthetic-quotes-" + Guid.NewGuid().ToString("N"), CodeVersion = CodeVersion };
-        marketStore.Create(manifest.Id, clock.GetUtcNow(), JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
+        var store = markets.ForDate(LocalDate(clock.GetUtcNow()));
+        store.Create(manifest.Id, clock.GetUtcNow(), JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
         var events = QuoteRehearsal.Lifecycle().Select(item => item with { RunId = manifest.Id }).ToArray();
-        marketStore.Append(events);
-        marketStore.Checkpoint(manifest.Id, events[^1].Sequence, "{}", true);
+        store.Append(events);
+        store.Checkpoint(manifest.Id, events[^1].Sequence, "{}", true);
         return Replay(new(manifest.Id));
     }
 
     public QuoteReplayResult Replay(QuoteReplayRequest request)
     {
-        var source = marketStore.Runs().SingleOrDefault(item => item.Id == request.SourceRunId) ?? throw new InvalidOperationException("RECORDING_NOT_FOUND");
+        var source = markets.Runs().SingleOrDefault(item => item.Id == request.SourceRunId) ?? throw new InvalidOperationException("RECORDING_NOT_FOUND");
         var manifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var originalCode = manifest.CodeVersion;
         if (request.EngineJson is not null)
@@ -376,14 +426,15 @@ public sealed class LivePaperService : BackgroundService
             applyRecoveryBoundaries: request.EngineJson is null || manifest.EngineJson == JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!.EngineJson);
         var sourceManifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var sourceSession = new QuoteTradingSession(sourceManifest);
-        foreach (var item in marketStore.Read(source.Id))
+        var sourceStore = markets.StoreOf(source.Id);
+        foreach (var item in sourceStore.Read(source.Id))
         {
             try { sourceSession.Apply(item); }
             catch (InvalidOperationException) when (item.Kind == "Control") { }
             if (sourceSession.Universe.Count != 0) break;
         }
         runner.FreezeReplayUniverse(sourceSession.Universe);
-        foreach (var item in marketStore.Read(source.Id))
+        foreach (var item in sourceStore.Read(source.Id))
         {
             try { runner.Apply(item); }
             catch (InvalidOperationException) when (item.Kind == "Control") { /* rejected controls remain part of original evidence */ }
