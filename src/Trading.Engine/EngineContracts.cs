@@ -165,7 +165,8 @@ public sealed record PositionPolicyState(string? PositionId = null,
     IReadOnlyList<string>? LatchedExitReasons = null, decimal? PeakNetLiquidationPnl = null,
     bool ProfitTrailArmed = false, decimal? ProfitTrailThreshold = null, DateTimeOffset? LastEvaluationUtc = null,
     string? PositionFingerprint = null, DateTimeOffset? SoftWeakeningSinceUtc = null,
-    DateTimeOffset? SoftWeakeningDeadlineUtc = null)
+    DateTimeOffset? SoftWeakeningDeadlineUtc = null, DateTimeOffset? NetSampleBarEndUtc = null,
+    decimal? LastNetSample = null, decimal? AverageNetBarMove = null, int NetMoveSamples = 0)
 {
     // Hosts seeding entry-time state must bind it to the same frozen evidence as later evaluations.
     public static PositionPolicyState ForPosition(PaperPositionEvidence position) => new(

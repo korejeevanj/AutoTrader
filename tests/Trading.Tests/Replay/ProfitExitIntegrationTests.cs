@@ -122,7 +122,7 @@ public sealed class ProfitExitIntegrationTests
     {
         using var fixture = new ReplayFixture();
         var profile = fixture.Engine.Strategies[0];
-        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.FixedNetTarget } } }] };
+        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.FixedNetTarget, WideTrailPeak = 0m, WideTrailGiveback = 0m, AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m } } }] };
         var settings = fixture.Configuration with { Presets = [new() { ExecutionDelay = TimeSpan.FromSeconds(1) }] };
         var data = DelayedProfitPath(fixture.Load());
         var trade = Assert.Single(Assert.Single(new ReplayRunner(data, settings, engine).RunToEnd().Sessions).Trades);
@@ -136,7 +136,7 @@ public sealed class ProfitExitIntegrationTests
     public void Missing_post_trigger_candles_keep_the_exit_pending_without_an_invented_profit_fill()
     {
         using var fixture = new ReplayFixture(); var profile = fixture.Engine.Strategies[0];
-        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.FixedNetTarget } } }] };
+        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.FixedNetTarget, WideTrailPeak = 0m, WideTrailGiveback = 0m, AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m } } }] };
         var settings = fixture.Configuration with { Presets = [new() { ExecutionDelay = TimeSpan.FromSeconds(1) }] };
         var data = DelayedProfitPath(fixture.Load());
         var cutoff = new DateTimeOffset(2026,10,9,4,4,0,TimeSpan.Zero);
@@ -151,7 +151,7 @@ public sealed class ProfitExitIntegrationTests
     public void An_option_candle_high_does_not_ratchet_the_trail_or_change_its_fills()
     {
         using var fixture = new ReplayFixture(); var profile = fixture.Engine.Strategies[0];
-        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.TrailingNetProfit } } }] };
+        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = ProfitExitMode.TrailingNetProfit, WideTrailPeak = 0m, WideTrailGiveback = 0m, AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m } } }] };
         var data = ProfitPath(fixture.Load());
         var changed = data with { Candles = data.Candles.Select(bar => bar.InstrumentId == "call"
             ? bar with { High = 10000m } : bar).ToArray() };
@@ -175,7 +175,7 @@ public sealed class ProfitExitIntegrationTests
     {
         using var fixture = new ReplayFixture();
         var profile = fixture.Engine.Strategies[0];
-        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = mode } } }] };
+        var engine = fixture.Engine with { Strategies = [profile with { Position = profile.Position with { ProfitExit = new() { Mode = mode, WideTrailPeak = 0m, WideTrailGiveback = 0m, AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m } } }] };
         var data = ProfitPath(fixture.Load());
         var result = new ReplayRunner(data, fixture.Configuration, engine).RunToEnd();
         var trade = Assert.Single(Assert.Single(result.Sessions).Trades);
@@ -233,5 +233,6 @@ public sealed class ProfitExitIntegrationTests
 
     private static Task<HttpResponseMessage> Select(HistoricalApiFixture fixture, string id, ProfitExitMode mode) => fixture.Client.PostAsJsonAsync(
         $"/api/replay/jobs/{id}/commands", new { action = "setProfitExit", profitExit = new { version = "profit-exit-v1", mode = mode.ToString(),
-            netTarget = 500m, trailActivation = 500m, trailGiveback = 200m, minimumLockedNetProfit = 300m } });
+            netTarget = 500m, trailActivation = 500m, trailGiveback = 200m, minimumLockedNetProfit = 300m,
+            wideTrailPeak = 0m, wideTrailGiveback = 0m, adaptiveGivebackMultiplier = 0m, thesisIntactGivebackFactor = 1m } });
 }

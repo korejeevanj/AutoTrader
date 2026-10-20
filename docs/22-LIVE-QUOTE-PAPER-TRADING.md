@@ -25,7 +25,7 @@ have not been established by those checks.
 - Paper capital ₹500,000; one lot, one shared pending/open slot; three automatic
   attempts and one separate manual diagnostic. Gross stop ₹200; modeled net entry
   risk ceiling ₹400; modeled favorable net hurdle ₹500; session pause loss ₹1,200.
-  Entries 09:30–11:30, session exit request 15:15. Fixed-profit exits disabled.
+  Entries 09:30–11:30, session exit request 15:15. Trailing net-profit lock enabled (₹500 activation, ₹300 floor, ₹200 giveback widening to ₹400 from a ₹1,000 peak).
 - Fills require a new fresh quote received after intent +250 ms, whole-position
   observed depth, adverse tick rounding, buy ask+one tick / sell bid-one tick.
   Entry timeout five seconds; unexecutable exits remain pending. Reassess cash/risk
@@ -106,7 +106,7 @@ from authenticated live evidence. Zero qualifying strategy trades is valid.
 9. Afterward, **Load recordings**, select the source, and **Replay recorded quotes**.
    Empty configuration means frozen original settings; a complete changed Engine JSON
    creates a comparison result. Current v1 supports one Bank Nifty strategy, one lot
-   and disabled profit exits. Execution delay can be stressed (e.g. one second), but
+   and any profit-exit mode. Execution delay can be stressed (e.g. one second), but
    adverse slippage remains one actual contract tick. The source universe is fixed;
    unrecorded contracts/prices/depth are never manufactured.
 

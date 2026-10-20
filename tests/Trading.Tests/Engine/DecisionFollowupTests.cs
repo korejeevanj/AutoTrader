@@ -130,7 +130,8 @@ public sealed class DecisionFollowupTests
     {
         var input = EngineFixture.Position();
         input = input with { Position = input.Position with { FrozenStrategy = input.Position.FrozenStrategy with
-            { Position = input.Position.FrozenStrategy.Position with { ProfitExit = new() { Mode = ProfitExitMode.TrailingNetProfit } } } },
+            { Position = input.Position.FrozenStrategy.Position with { ProfitExit = new() { Mode = ProfitExitMode.TrailingNetProfit, WideTrailPeak = 0m, WideTrailGiveback = 0m,
+                AdaptiveGivebackMultiplier = 0m, ThesisIntactGivebackFactor = 1m } } } },
             OptionQuote = input.OptionQuote! with { Bid = 221.6m, Ask = 222.6m },
             NetLiquidation = input.NetLiquidation! with { GrossPnl = 540m, NetPnl = 500m } };
         var armed = engine.EvaluatePosition(input);
@@ -167,6 +168,9 @@ public sealed class DecisionFollowupTests
             return new OptionCandidateEvidence(contract, quote, risk);
         }).ToArray();
         input = input with { Candidates = options, UniverseVersion = "frozen-35-alternatives-v1" };
+        // This test pins spread-first ranking so the bounded-universe selection stays independent of the default order.
+        var engine = new TradingDecisionEngine(new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY", Ranking =
+            [RankingCriterion.SpreadPercentage, RankingCriterion.RoundTripFriction, RankingCriterion.StrikeDistance, RankingCriterion.ObservedDepth] }] });
         var forward = engine.EvaluateIndex(input);
         var reversed = engine.EvaluateIndex(input with { Candidates = options.Reverse().ToArray() });
         Assert.Equal(JsonSerializer.Serialize(forward), JsonSerializer.Serialize(reversed));
@@ -175,6 +179,31 @@ public sealed class DecisionFollowupTests
         Assert.Equal(25m, forward.Candidates.Single(candidate => candidate.ContractId == "option-30").FinancialEvidence!.AbsoluteStrikeDistance);
         Assert.Null(forward.Candidates.Single(candidate => candidate.ContractId == "option-34").Rank);
         Assert.Contains("OPTION_DEFINITION_UNAVAILABLE", forward.Candidates.Single(candidate => candidate.ContractId == "option-34").ReasonCodes);
+    }
+
+    [Theory]
+    [InlineData(150, GateOutcome.PASS)]
+    [InlineData(151, GateOutcome.FAIL)]
+    public void Entry_friction_must_leave_room_inside_the_gross_stop(int friction, GateOutcome expected)
+    {
+        var input = EngineFixture.Entry();
+        var seed = input.Candidates[0];
+        input = input with { Candidates = [seed with { Risk = seed.Risk! with { RoundTripFriction = friction } }] };
+        var gate = Assert.Single(Assert.Single(engine.EvaluateIndex(input).Candidates).Gates, g => g.Code == "FRICTION_TO_STOP");
+        Assert.Equal(expected, gate.Outcome); Assert.Equal(150m, gate.Threshold);
+    }
+
+    [Fact]
+    public void Friction_gate_can_be_disabled_and_default_ranking_prefers_nearest_strike_then_rupee_friction()
+    {
+        var input = EngineFixture.Entry();
+        var seed = input.Candidates[0];
+        var off = new TradingDecisionEngine(new EngineConfiguration { Strategies = [new() { IndexId = "BANKNIFTY",
+            Risk = new() { MaximumFrictionToStopRatio = null } }] });
+        var costly = input with { Candidates = [seed with { Risk = seed.Risk! with { RoundTripFriction = 190m } }] };
+        Assert.DoesNotContain(Assert.Single(off.EvaluateIndex(costly).Candidates).Gates, g => g.Code == "FRICTION_TO_STOP");
+        Assert.Equal([RankingCriterion.StrikeDistance, RankingCriterion.RoundTripFriction, RankingCriterion.SpreadPercentage, RankingCriterion.ObservedDepth],
+            new IndexStrategyConfiguration().Ranking);
     }
 
     [Fact]

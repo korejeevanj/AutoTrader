@@ -93,8 +93,8 @@ public sealed record IndexStrategyConfiguration
     public RiskConfiguration Risk { get; init; } = new();
     public PositionPolicyConfiguration Position { get; init; } = new();
     public IReadOnlyList<RankingCriterion> Ranking { get; init; } =
-        [RankingCriterion.SpreadPercentage, RankingCriterion.RoundTripFriction,
-         RankingCriterion.StrikeDistance, RankingCriterion.ObservedDepth];
+        [RankingCriterion.StrikeDistance, RankingCriterion.RoundTripFriction,
+         RankingCriterion.SpreadPercentage, RankingCriterion.ObservedDepth];
 
     internal IReadOnlyList<string> Validate()
     {
@@ -118,7 +118,7 @@ public sealed record IndexStrategyConfiguration
             && Evidence.MaximumSpreadPercent > 0m && Evidence.MinimumDepthLots > 0,
             "Evidence ages, spread and depth must be positive; skew cannot be negative.");
         Require(Risk is not null && Risk.GrossCashStop > 0m && Risk.MaximumNetRisk > 0m
-            && (Risk.NetCashStop is null or > 0m)
+            && (Risk.NetCashStop is null or > 0m) && (Risk.MaximumFrictionToStopRatio is null or > 0m)
             && Risk.MinimumScenarioNetProfit > 0m && Risk.StructuralLookbackBars > 0
             && Risk.StructuralBufferMultiplier >= 0m && !string.IsNullOrWhiteSpace(Risk.FeeProfileId),
             "Risk budgets, scenario hurdle, lookback and FeeProfileId are required.");
@@ -150,6 +150,8 @@ public sealed record RiskConfiguration
     // Separate opt-in position trigger, not the entry-feasibility ceiling below.
     public decimal? NetCashStop { get; init; }
     public decimal MaximumNetRisk { get; init; } = 400m;
+    /// <summary>Entry gate: modelled/observed round-trip friction (spread, slippage, fees) may be at most this share of <see cref="GrossCashStop"/>; null disables it.</summary>
+    public decimal? MaximumFrictionToStopRatio { get; init; } = 0.75m;
     public decimal MinimumScenarioNetProfit { get; init; } = 500m;
     public int StructuralLookbackBars { get; init; } = 14;
     public decimal StructuralBufferMultiplier { get; init; } = 0.10m;

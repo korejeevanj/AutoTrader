@@ -72,17 +72,57 @@ The complete editable example is `src/Trading.Engine/engine.paper.example.json`.
 
 ```json
 {
-  "Version": "profit-exit-v1",
+  "Version": "profit-exit-v2",
   "Mode": "TrailingNetProfit",
   "NetTarget": 500,
   "TrailActivation": 500,
   "TrailGiveback": 200,
-  "MinimumLockedNetProfit": 300
+  "MinimumLockedNetProfit": 300,
+  "WideTrailPeak": 1000,
+  "WideTrailGiveback": 400
 }
 ```
 
-Only the selected mode applies. Defaults preserve baseline behavior until a profit
-mode is selected. Numeric/unknown modes, nonpositive targets/activation/giveback and
+Only the selected mode applies. Since 20 October 2026 the default is the trailing
+lock; select `Disabled` explicitly for a baseline comparison. `WideTrailPeak` /
+`WideTrailGiveback` add one tier: once the peak net mark reaches `WideTrailPeak` the
+giveback widens so large winners can run. The threshold is still
+`max(floor, peak − giveback)` and only ever tightens, so crossing into the wide tier
+never lowers an already ratcheted stop. Set `WideTrailPeak` to 0 for one flat
+giveback; otherwise it must exceed activation and the wide giveback must exceed the
+narrow one. The React policy controls do not yet expose the wide tier (API/JSON only).
+
+Giveback options (precedence: volatility-scaled, then percentage, then the tier above):
+
+- `AdaptiveGivebackMultiplier` (1.5; 0 disables): giveback = multiple of the recent average
+  one-bar move in net P&L, never below `TrailGiveback`; `VolatilityLookbackBars` /
+  `VolatilityWarmupBars` shape the average and the fixed giveback applies until warm.
+- `TrailGivebackPercent` (0 disables): giveback = that percentage of the peak, never below `TrailGiveback`.
+- `ThesisIntactGivebackFactor` (1.5; 1 disables): while the VWAP/breadth thesis is confirmed
+  (no wrong-side close, no adverse breadth, no pending soft warning, monitoring evidence present)
+  the giveback is multiplied by this. `MaximumGiveback` (600) caps every variant.
+
+The floor and ratchet are unchanged, and the trail is evaluated after the thesis checks.
+
+### Entry cost and selection
+
+`Risk.MaximumFrictionToStopRatio` (0.75; null disables) rejects entries whose round-trip friction
+exceeds that share of the gross stop. The default ranking is now strike distance, rupee friction,
+spread percentage, depth; spread percentage first favoured high-premium far-dated contracts.
+
+### 14 October A/B (single day, candle research, post hoc)
+
+| Policy | base preset net ₹ | adverse preset net ₹ |
+| --- | ---: | ---: |
+| Disabled | −691.88 | −378.63 |
+| Flat trail 500/200/300 | +652.55 | +714.91 |
+| Tiered trail (wide 1000/400) | +82.29 | +1,031.78 |
+
+One session and two trades per preset: this is a reason to test more dates, not a
+qualified result. Later variants (volatility-scaled, thesis-widened, 15/20/25% of peak) on the same day
+scored 1,367 (flat, 15%), 1,114 (tiered, thesis, combined) and 797 (volatility, 20%, 25%) in total;
+the new entry selection lost on this day. None is evidence yet. The wide tier gave back more on the base preset (exit at 808.89
+from a 1,208.89 peak) and captured more on the adverse preset. Numeric/unknown modes, nonpositive targets/activation/giveback and
 floors outside `[0, activation)` are rejected. The full values enter the frozen
 configuration fingerprint, including changes that keep the same version label.
 
