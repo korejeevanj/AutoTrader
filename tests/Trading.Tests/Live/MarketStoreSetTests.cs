@@ -97,6 +97,58 @@ public sealed class MarketStoreSetTests : IDisposable
     }
 
     [Fact]
+    public void Replaying_one_archived_day_after_another_replaces_the_cache_without_failing()
+    {
+        var set = new MarketStoreSet(root);
+        var first = Record(set, new(2026, 10, 18), "live-20261018-a", closed: true);
+        var second = Record(set, new(2026, 10, 19), "live-20261019-b", closed: true);
+        Record(set, new(2026, 10, 20), "live-20261020-c", closed: true);
+        Record(set, new(2026, 10, 21), "live-20261021-d", closed: true);
+        Assert.Equal(2, set.ArchiveClosedDays().Count);
+
+        Assert.Equal(Payloads(QuoteSessionTests.Lifecycle()), Payloads(set.Read(first)));
+        Assert.Equal(Payloads(QuoteSessionTests.Lifecycle()), Payloads(set.Read(second)));
+        Assert.Equal(Payloads(QuoteSessionTests.Lifecycle()), Payloads(set.Read(first)));
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(root, "cache"), "*.sqlite"));
+    }
+
+    [Fact]
+    public void An_unreadable_day_file_is_reported_but_does_not_hide_other_days_or_break_run_lookup()
+    {
+        var set = new MarketStoreSet(root);
+        var good = Record(set, new(2026, 10, 21), "live-20261021-a", closed: false);
+        File.WriteAllText(Path.Combine(root, "market-2026-10-22.sqlite"), "not a database");
+
+        Assert.Equal(good, Assert.Single(set.Runs()).Id);
+        Assert.Equal(["market-2026-10-22.sqlite"], set.Faults);
+        Assert.Equal(Payloads(QuoteSessionTests.Lifecycle()), Payloads(set.Read(good)));
+    }
+
+    [Fact]
+    public void A_day_that_has_not_started_yet_still_takes_one_of_the_raw_slots()
+    {
+        var set = new MarketStoreSet(root);
+        foreach (var day in new[] { 18, 19, 20 }) Record(set, new(2026, 10, day), $"live-202610{day}-x", closed: true);
+
+        Assert.Equal(["market-2026-10-19.sqlite", "market-2026-10-18.sqlite"], set.ArchiveClosedDays(today: new(2026, 10, 21)));
+    }
+
+    [Fact]
+    public void An_archived_day_whose_run_listing_went_missing_is_rebuilt()
+    {
+        var set = new MarketStoreSet(root);
+        var oldest = Record(set, new(2026, 10, 19), "live-20261019-a", closed: true);
+        Record(set, new(2026, 10, 20), "live-20261020-b", closed: true);
+        Record(set, new(2026, 10, 21), "live-20261021-c", closed: true);
+        set.ArchiveClosedDays();
+        var listing = Path.Combine(root, "market-2026-10-19.sqlite.br.runs.json");
+        File.Delete(listing);
+
+        Assert.Contains(set.Runs(), run => run.Id == oldest && run.Closed);
+        Assert.True(File.Exists(listing));
+    }
+
+    [Fact]
     public void Listing_runs_never_creates_a_database()
     {
         Assert.Empty(new MarketStoreSet(root).Runs());

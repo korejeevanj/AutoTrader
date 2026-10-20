@@ -123,7 +123,10 @@ Default API-relative `LivePaper:RootDirectory=../../data/live` contains:
   than the two newest day files, Brotli-compressed once per IST date outside 08:00–15:45.
   The raw file is removed only after the archive decompresses to the identical SHA-256;
   a day holding an unclosed run is never archived. Replay of an archived run decompresses
-  that one day into `cache/` on demand. `LivePaper:ArchiveClosedDays=false` disables it.
+  that one day into `cache/` on demand; a missing run listing is rebuilt from the archive.
+  A day file that cannot be read is skipped and reported as `MARKET_FILE_UNREADABLE` rather
+  than blocking other days or restart recovery. The pass counts a not-yet-created current
+  date as one of the two raw slots. `LivePaper:ArchiveClosedDays=false` disables it.
 - `paper.sqlite`: acknowledged account/intents/positions/attempts, lifecycle events,
   model assessment inputs/scenario sidecars, checkpoints and compressed append-only
   candidate/position decision batches. The paged JSON link reads committed history.
@@ -159,8 +162,8 @@ About 44 instruments in `full` mode (184-byte depth packets; the index is 32 byt
 At ~1 update per instrument per second over 09:15–15:30, a synthetic stream of that shape
 measured roughly **225 MB per day** in SQLite (about 1 KB of row overhead per message
 beyond the raw payload) and **~55 MB per day** Brotli-compressed. Faster real ticking can
-multiply this several times. The live view reports the open file size (database plus WAL)
-and free disk, and raises `LOW_DISK_SPACE` below 5 GiB. Replace this estimate with the
+multiply this several times. The live view reports the open file size (database plus WAL),
+recorded messages per second and free disk, and raises `LOW_DISK_SPACE` below 5 GiB. Replace this estimate with the
 measured figure after the first full session.
 
 ## Experimental option assessment

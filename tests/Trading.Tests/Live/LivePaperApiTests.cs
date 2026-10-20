@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Trading.Api;
 using Trading.Data;
 using Trading.Replay;
@@ -22,9 +23,7 @@ public sealed class LivePaperApiTests
         store.Create(manifest.Id, manifest.CreatedAtUtc, JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
         store.Append(QuoteSessionTests.Lifecycle());
         var source = store.Read(manifest.Id).Select(item => Convert.ToHexString(item.Payload)).ToArray();
-        await using (var host = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.UseEnvironment("Development").ConfigureServices(services => services.PostConfigure<LivePaperOptions>(options =>
-                { options.RootDirectory = root; options.ConnectOnStartup = false; }))))
+        await using (var host = Host(root))
         {
             using var client = host.CreateClient();
             var status = await client.GetFromJsonAsync<LivePaperView>("/api/live/status", QuoteTradingSession.Json);
@@ -49,14 +48,13 @@ public sealed class LivePaperApiTests
     public async Task Status_reports_free_disk_and_no_archive_fault_before_any_recording_exists()
     {
         var root = Path.Combine(Path.GetTempPath(), "live-api-" + Guid.NewGuid().ToString("N"));
-        await using var host = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.UseEnvironment("Development").ConfigureServices(services => services.PostConfigure<LivePaperOptions>(options =>
-                { options.RootDirectory = root; options.ConnectOnStartup = false; options.ArchiveClosedDays = false; })));
+        await using var host = Host(root);
         using var client = host.CreateClient();
 
         var status = await client.GetFromJsonAsync<LivePaperView>("/api/live/status", QuoteTradingSession.Json);
 
         Assert.Equal(0, status!.MarketRecordingBytes);
+        Assert.Equal(0, status.RecordedMessagesPerSecond);
         Assert.True(status.FreeDiskBytes > 0);
         Assert.Null(status.ArchiveError);
         Assert.False(Directory.Exists(root));
@@ -76,9 +74,7 @@ public sealed class LivePaperApiTests
             var events = QuoteSessionTests.Lifecycle().Select(item => item with { RunId = id }).ToArray();
             store.Append(events); store.Checkpoint(id, events[^1].Sequence, "{}", true);
         }
-        await using var host = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.UseEnvironment("Development").ConfigureServices(services => services.PostConfigure<LivePaperOptions>(options =>
-                { options.RootDirectory = root; options.ConnectOnStartup = false; options.ArchiveClosedDays = false; })));
+        await using var host = Host(root);
         using var client = host.CreateClient();
         async Task<QuoteReplayResult> Replay()
         {
@@ -93,6 +89,43 @@ public sealed class LivePaperApiTests
 
         Assert.Equal(27.10m, Assert.Single(raw.Result.Paper.Trades).NetPnl);
         Assert.Equal(JsonSerializer.Serialize(raw.Result, QuoteTradingSession.Json), JsonSerializer.Serialize(archived.Result, QuoteTradingSession.Json));
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        await host.DisposeAsync();
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
     }
+
+    [Fact]
+    public async Task Restart_recovers_an_unclosed_run_from_an_older_day_file_even_beside_an_unreadable_one()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "live-api-" + Guid.NewGuid().ToString("N"));
+        var manifest = QuoteSessionTests.Manifest() with { Id = "live-20261021-a" };
+        var json = JsonSerializer.Serialize(manifest, QuoteTradingSession.Json);
+        var market = new MarketStoreSet(root).ForDate(manifest.TradingDate);
+        market.Create(manifest.Id, manifest.CreatedAtUtc, json);
+        var events = QuoteSessionTests.Lifecycle().Select(item => item with { RunId = manifest.Id }).ToArray();
+        market.Append(events);
+        var paper = new SqliteQuoteStore(Path.Combine(root, "paper.sqlite"));
+        paper.Create(manifest.Id, manifest.CreatedAtUtc, json);
+        paper.Checkpoint(manifest.Id, events[^1].Sequence, JsonSerializer.Serialize(new QuoteTradingSession(manifest).Checkpoint(), QuoteTradingSession.Json));
+        File.WriteAllText(Path.Combine(root, "market-2026-10-22.sqlite"), "not a database");
+        await using var host = Host(root, new FixedClock(new(2026, 10, 25, 4, 0, 0, TimeSpan.Zero)));
+        using var client = host.CreateClient();
+
+        var status = await client.GetFromJsonAsync<LivePaperView>("/api/live/status", QuoteTradingSession.Json);
+
+        Assert.Equal("RecoveredPaused", status!.Status);
+        Assert.Equal(manifest.Id, status.RunId);
+        Assert.True(status.ReceivedSequence > events.Length, "sequence continues after the stored tail");
+        await host.DisposeAsync();
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+    }
+
+    // Archiving is switched off so the tests decide when a day is compressed.
+    private static WebApplicationFactory<Program> Host(string root, TimeProvider? clock = null) => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        builder.UseEnvironment("Development").ConfigureServices(services =>
+        {
+            services.PostConfigure<LivePaperOptions>(options => { options.RootDirectory = root; options.ConnectOnStartup = false; options.ArchiveClosedDays = false; });
+            if (clock is not null) { services.RemoveAll<TimeProvider>(); services.AddSingleton(clock); }
+        }));
+
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
 }

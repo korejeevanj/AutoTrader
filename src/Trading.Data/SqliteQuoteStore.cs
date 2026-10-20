@@ -11,10 +11,15 @@ public sealed class SqliteQuoteStore(string path)
 {
     public string FilePath => path;
 
+    private string ConnectionString => new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 5 }.ToString();
+
+    // Closes this file's pooled handles so it can be copied, archived or deleted (Windows refuses otherwise).
+    public void ReleasePool() { using var connection = new SqliteConnection(ConnectionString); SqliteConnection.ClearPool(connection); }
+
     private SqliteConnection Open()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 5 }.ToString());
+        var connection = new SqliteConnection(ConnectionString);
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -130,6 +135,7 @@ public sealed class SqliteQuoteStore(string path)
     {
         using var connection = Open(); using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)"; command.ExecuteNonQuery();
+        SqliteConnection.ClearPool(connection);
     }
 
     public IReadOnlyList<RecordedQuoteRun> Runs()

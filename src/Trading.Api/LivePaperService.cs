@@ -29,7 +29,7 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     IReadOnlyList<HistoricalCandle> FuturesBars, IReadOnlyList<CandidateAssessment> Candidates, IReadOnlyList<LiveQuoteFreshness> QuoteFreshness,
     QuotePaperState? Paper, decimal? SessionNet, PositionDecision? PositionDecision, IReadOnlyList<GateResult> ContextGates,
     DirectionalEvidence? Directional, bool PaperPersistenceHealthy, bool PaperPersistencePending,
-    long MarketRecordingBytes, long FreeDiskBytes, string? ArchiveError);
+    long MarketRecordingBytes, long FreeDiskBytes, double RecordedMessagesPerSecond, string? ArchiveError);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
 public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null);
@@ -51,7 +51,7 @@ public sealed class LivePaperService : BackgroundService
     private readonly SqliteQuoteStore paperStore;
     private readonly SqliteQuoteStore replayStore;
     private readonly string root;
-    private SqliteQuoteStore? marketStore; // the open run's trading-date file
+    private SqliteQuoteStore marketStore; // the open run's trading-date file
     private QuoteTradingSession? session;
     private BufferedQuoteRecorder? recorder;
     private BufferedPaperCheckpoints? paperWriter;
@@ -68,8 +68,12 @@ public sealed class LivePaperService : BackgroundService
     private CancellationTokenSource? connectionLifetime;
     private string? archiveError;
     private DateOnly? archiveAttemptedOn;
-    private (long Market, long Free) storageSample;
+    private sealed record StorageSample(long MarketBytes, long FreeBytes, double MessagesPerSecond);
+    private StorageSample storageSample = new(0, 0, 0);
     private DateTimeOffset storageSampledAt;
+    private long sampledSequence;
+    private static readonly TimeSpan StorageSampleInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ArchiveBusyFrom = TimeSpan.FromHours(8), ArchiveBusyUntil = new(15, 45, 0);
     private const long LowDiskBytes = 5L * 1024 * 1024 * 1024;
     private static readonly string CodeVersion = QuoteTradingSession.Key(string.Join(":",
         typeof(LivePaperService).Assembly.ManifestModule.ModuleVersionId,
@@ -87,7 +91,7 @@ public sealed class LivePaperService : BackgroundService
         this.options = options.Value; this.environment = environment; this.kite = kite; this.published = published;
         this.clients = clients; this.credentials = credentials; this.clock = clock; this.hub = hub;
         root = Path.GetFullPath(this.options.RootDirectory, environment.ContentRootPath);
-        markets = new(root); paperStore = new(Path.Combine(root, "paper.sqlite"));
+        markets = new(root); marketStore = markets.ForDate(LocalDate(clock.GetUtcNow())); paperStore = new(Path.Combine(root, "paper.sqlite"));
         replayStore = new(Path.Combine(root, "quote-replays.sqlite"));
     }
 
@@ -101,47 +105,49 @@ public sealed class LivePaperService : BackgroundService
             session?.AutoEnabled == true && acknowledged?.AutoEnabled == true, recorder?.Healthy == true && session?.RecorderHealthy == true,
             session?.RecordingIncomplete ?? false, sequence, recorder?.DurableSequence ?? 0, recorder?.QueueDepth ?? 0,
             recorder?.LagMilliseconds ?? 0, (session is null ? [] : session.Manifest.ReferenceIssues.Concat(session.Issues)
-                .Concat(storage.Free is > 0 and < LowDiskBytes ? ["LOW_DISK_SPACE"] : [])).Distinct().ToArray(),
+                .Concat(storage.FreeBytes is > 0 and < LowDiskBytes ? ["LOW_DISK_SPACE"] : [])).Distinct().ToArray(),
             session?.Manifest.Instruments.Where(item => item.Role is not (HistoricalInstrumentRole.Call or HistoricalInstrumentRole.Put)
                 || session.Universe.Contains(item.Id)).ToArray() ?? [], session?.Universe ?? [], session?.Quotes ?? [],
             session?.FuturesBars ?? [], session?.Candidates ?? [], Freshness(), Volatile.Read(ref acknowledged)?.Paper,
             ReferenceEquals(session?.Paper, acknowledged?.Paper) ? session?.SessionNet : null,
             acknowledged?.Paper.Position?.Approval.Id == session?.Paper.Position?.Approval.Id ? session?.LastPositionDecision : null,
             session?.ContextGates ?? [], session?.Directional, paperWriter?.Healthy == true, !lastCommit.IsCompleted,
-            storage.Market, storage.Free, archiveError);
+            storage.MarketBytes, storage.FreeBytes, storage.MessagesPerSecond,
+            archiveError ?? (markets.Faults.Count != 0 ? "MARKET_FILE_UNREADABLE" : null));
         }
     }
 
     // Open recording size (database plus WAL) and free disk, refreshed at most every five seconds under the gate.
-    private (long Market, long Free) Storage()
+    private StorageSample Storage()
     {
-        var now = clock.GetUtcNow();
-        if (now - storageSampledAt < TimeSpan.FromSeconds(5)) return storageSample;
-        storageSampledAt = now;
+        var now = clock.GetUtcNow(); var elapsed = now - storageSampledAt;
+        if (elapsed < StorageSampleInterval) return storageSample;
+        var rate = storageSampledAt == default ? 0 : Math.Max(0, sequence - sampledSequence) / elapsed.TotalSeconds;
+        storageSampledAt = now; sampledSequence = sequence;
         try
         {
-            var size = marketStore?.FilePath is { } path ? new[] { path, path + "-wal" }.Where(File.Exists).Sum(file => new FileInfo(file).Length) : 0;
+            var size = new[] { marketStore.FilePath, marketStore.FilePath + "-wal" }.Where(File.Exists).Sum(file => new FileInfo(file).Length);
             var anchor = root; while (!Directory.Exists(anchor) && Path.GetDirectoryName(anchor) is { } parent) anchor = parent;
-            storageSample = (size, new DriveInfo(Path.GetPathRoot(anchor)!).AvailableFreeSpace);
+            storageSample = new(size, new DriveInfo(Path.GetPathRoot(anchor)!).AvailableFreeSpace, rate);
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { storageSample = (0, 0); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { storageSample = new(0, 0, rate); }
         return storageSample;
     }
 
-    // Once per IST date, outside 08:00–15:45 so compression never competes with the open or the session.
+    // Once per IST date, outside the trading day so compression never competes with the open or the session.
     private void ArchiveWhenIdle(DateTimeOffset now)
     {
-        var local = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata"));
-        if (!options.ArchiveClosedDays || archiveAttemptedOn == DateOnly.FromDateTime(local.DateTime)
-            || local.TimeOfDay is { } time && time >= TimeSpan.FromHours(8) && time < new TimeSpan(15, 45, 0)) return;
-        archiveAttemptedOn = DateOnly.FromDateTime(local.DateTime); ArchiveOldDays();
+        var local = IstTime(now); var date = DateOnly.FromDateTime(local);
+        if (!options.ArchiveClosedDays || archiveAttemptedOn == date
+            || local.TimeOfDay >= ArchiveBusyFrom && local.TimeOfDay < ArchiveBusyUntil) return;
+        archiveAttemptedOn = date; ArchiveOldDays(date);
     }
 
     // Compresses closed trading-date files beyond the newest two. Runs off the feed path; a failure is shown, never fatal.
-    private void ArchiveOldDays() => _ = Task.Run(() =>
+    private void ArchiveOldDays(DateOnly today) => _ = Task.Run(() =>
     {
-        try { markets.ArchiveClosedDays(); lock (gate) archiveError = null; }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+        try { markets.ArchiveClosedDays(today: today); lock (gate) archiveError = null; }
+        catch (Exception error) when (error is not OutOfMemoryException)
         { lock (gate) archiveError = "MARKET_ARCHIVE_FAILED"; }
     });
 
@@ -328,8 +334,8 @@ public sealed class LivePaperService : BackgroundService
                         { status = "StorageFault"; errorCode = "SESSION_CLOSE_INCOMPLETE_DRAIN"; session.Degrade(errorCode); return; }
                         var checkpoint = JsonSerializer.Serialize(session.Checkpoint(), QuoteTradingSession.Json);
                         paperStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
-                        marketStore!.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
-                        session = null; recorder = null; paperWriter = null; acknowledged = null; marketStore = null;
+                        marketStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
+                        session = null; recorder = null; paperWriter = null; acknowledged = null;
                     }
                     await PrepareAsync(token);
                     }
@@ -452,7 +458,9 @@ public sealed class LivePaperService : BackgroundService
         return result;
     }
 
-    private static DateOnly LocalDate(DateTimeOffset utc) => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(utc, TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata")).DateTime);
+    private static DateTime IstTime(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata")).DateTime;
+
+    private static DateOnly LocalDate(DateTimeOffset utc) => DateOnly.FromDateTime(IstTime(utc));
 
     private IReadOnlyList<LiveQuoteFreshness> Freshness()
     {
