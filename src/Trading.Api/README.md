@@ -25,7 +25,8 @@ with an 08:30 refresh for runs prepared earlier. See the
 [agreement/runbook](../../docs/22-LIVE-QUOTE-PAPER-TRADING.md) for policy and limitations.
 
 `LivePaper:RootDirectory` defaults to `../../data/live` relative to API content root.
-`market.sqlite` stores raw events and manifests; `paper.sqlite` stores acknowledged
+`market-YYYY-MM-DD.sqlite` (one per IST trading date; older closed days become
+`.sqlite.br`) stores raw events and manifests; `paper.sqlite` stores acknowledged
 state and compressed decisions; `quote-replays.sqlite` isolates comparison results.
 Writers use WAL/FULL transactions. A dedicated paper writer never holds the protection
 lock during storage; commands await their commit outside that lock. Credentials still

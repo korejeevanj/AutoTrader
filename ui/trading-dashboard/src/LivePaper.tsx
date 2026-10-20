@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ist, num as formatNumber } from './format';
 
 const num = (value: number | null | undefined) => formatNumber(value ?? null);
+const mb = (bytes: number | undefined) => Math.round((bytes ?? 0) / 1048576).toLocaleString('en-IN');
 const enumLabel = (value: string | number | undefined, labels: readonly string[]) => typeof value === 'number' ? labels[value] ?? 'Unavailable' : value ?? 'Unavailable';
 
 interface Instrument { id: string; instrumentToken: number; role: string; expiry: string | null; lotSize: number | null; tickSize: number | null }
@@ -19,6 +20,7 @@ interface LiveView {
   recorderQueueDepth: number; recorderLagMilliseconds: number; issues: string[]; instruments: Instrument[]; universe: string[]; quotes: Tick[]; candidates: Candidate[];
   paper: Paper | null; sessionNet: number | null; positionDecision: { action: string | number; netLiquidationPnl: number | null; reasonCodes: string[] } | null;
   paperPersistenceHealthy: boolean; paperPersistencePending: boolean;
+  marketRecordingBytes: number; freeDiskBytes: number; recordedMessagesPerSecond: number; archiveError: string | null;
   quoteFreshness: { instrumentToken: number; state: string; quoteAgeSeconds: number | null; receiptAgeSeconds: number | null; lastTradeAgeSeconds: number | null }[];
   contextGates: Gate[];
   directional: { status: string | number; openingHigh: number | null; openingLow: number | null; vwap: number | null; aboveWeightPercent: number | null; belowWeightPercent: number | null; missingWeightPercent: number | null;
@@ -110,6 +112,7 @@ export function LivePaper() {
         <p>Session {view.tradingDate ?? 'not started'} · As-of {view.asOfUtc ? ist(view.asOfUtc) : 'unavailable'}</p>
         {view.runId && <p><a href={`/api/live/recordings/${encodeURIComponent(view.runId)}/decisions`} target="_blank" rel="noreferrer">Read committed decision history (paged JSON)</a></p>}
         <p>Received sequence {view.receivedSequence} · Committed {view.durableSequence} · Queue {view.recorderQueueDepth} · Lag {num(view.recorderLagMilliseconds)} ms</p>
+        <p>Recording file {mb(view.marketRecordingBytes)} MB · {num(view.recordedMessagesPerSecond)} msg/s · Free disk {mb(view.freeDiskBytes)} MB{view.archiveError ? ` · storage fault ${view.archiveError}` : ''}</p>
         <p>Paper persistence {view.paperPersistenceHealthy ? 'healthy' : 'not ready'}{view.paperPersistencePending ? ' · acknowledgement pending; the account below shows committed state only' : ''}</p>
         {view.recordingIncomplete && <p className="error">Recording contains a gap or possible crash-tail loss. Replay must retain this limitation.</p>}
         <p className="helper">{view.issues.join(' · ') || 'No reference/recovery issues reported.'}</p>

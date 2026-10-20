@@ -12,7 +12,7 @@ the host continues protective monitoring while blocking entries and disclosing l
 Dispose drains healthy queues; persistent storage failures bound shutdown waiting.
 
 The agreed [live increment](../../docs/22-LIVE-QUOTE-PAPER-TRADING.md) uses
-`LivePaper:RootDirectory/market.sqlite`, replacing the earlier raw-event-file design.
+`LivePaper:RootDirectory/market-YYYY-MM-DD.sqlite`, replacing the earlier raw-event-file design.
 `Storage:MarketEventRoot` remains unused by this path. Feed decoding/transport and
 SQLite are in Data; quote-derived bars are in Analytics; clock-driven execution and
 engine coordination are reused through Replay; the API owns hosting/subscriptions.
