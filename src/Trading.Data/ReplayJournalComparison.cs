@@ -9,7 +9,7 @@ public sealed record ReplayRunInfo(string RunId, string JobId, string Date, stri
 public sealed record ReplayDecisionDifference(string TimeUtc, string IndexId, string ContractId, string Category,
     string? LeftAction, string? RightAction, string? LeftReasons, string? RightReasons);
 
-public sealed partial class ReplayPaperJournal
+public sealed partial class ReplayEvidenceJournal
 {
     public IReadOnlyList<ReplayRunInfo> RunInfos(string? jobId = null, string? date = null)
     {

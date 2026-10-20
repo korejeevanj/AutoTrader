@@ -2,7 +2,7 @@ namespace Trading.Data;
 
 public sealed record ReplayRunOpening(string RunId, string ManifestJson, bool AllPresets);
 
-public sealed partial class ReplayPaperJournal
+public sealed partial class ReplayEvidenceJournal
 {
     // The opening survives manifest failure and the interval between manifest commit
     // and the host checkpoint. Its frozen bytes move into the immutable manifest.

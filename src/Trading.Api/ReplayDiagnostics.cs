@@ -21,19 +21,17 @@ public sealed partial class HistoricalReplayService
     private void Log(RuntimeJob runtime, string code, object? detail = null, string severity = "Information", bool acquisition = false)
     {
         var json = JsonSerializer.Serialize(detail ?? new { }, KiteCandleImporter.JsonOptions);
-        if (!paperJournal.IsInitialized)
-        {
-            if (runtime.StartupOperations.Count < 128)
-                runtime.StartupOperations.Enqueue(new(acquisition ? 0 : runtime.Job.Run, runtime.Replay?.Presets[runtime.PresetIndex].Id, clock.GetUtcNow(), runtime.Session?.CurrentTimeUtc, severity, code, json));
-            else runtime.DiagnosticError = "Operational log initialization backlog is full; wait for storage initialization before continuing.";
-            return;
-        }
         try
         {
-            paperJournal.Operation(runtime.Job.Id, acquisition ? 0 : runtime.Job.Run, runtime.Replay?.Presets[runtime.PresetIndex].Id,
-                clock.GetUtcNow(), runtime.Session?.CurrentTimeUtc, severity, code,
-                json);
-            runtime.DiagnosticError = null;
+            switch (operationLog.Record(new(runtime.Job.Id, acquisition ? 0 : runtime.Job.Run, runtime.Replay?.Presets[runtime.PresetIndex].Id,
+                clock.GetUtcNow(), runtime.Session?.CurrentTimeUtc, severity, code, json)))
+            {
+                case OperationLogStatus.BacklogFull:
+                    runtime.DiagnosticError = "Operational log initialization backlog is full; wait for storage initialization before continuing.";
+                    return;
+                case OperationLogStatus.Queued: return;
+                default: runtime.DiagnosticError = null; break;
+            }
         }
         catch (Exception error) when (error is IOException or System.Data.Common.DbException)
         {
@@ -67,7 +65,7 @@ public sealed partial class HistoricalReplayService
             rows, runtime.Job.Warnings, totals.Invalid, runtime.Qualification, runtime.Job.Id, evidence.Number, serverInstanceId);
     }
     public ReplayDataHealth? Health(string id) => jobs.TryGetValue(id, out var runtime) ? Volatile.Read(ref runtime.Health) ?? BuildHealth(runtime) : null;
-    public ReplayRunDiagnostics? Diagnostics(string id) => jobs.ContainsKey(id) ? new(paperJournal.IsInitialized ? paperJournal.Operations(id) : [], paperJournal.IsInitialized ? paperJournal.RunInfos(id) : [], !paperJournal.IsInitialized) : null;
+    public ReplayRunDiagnostics? Diagnostics(string id) => jobs.ContainsKey(id) ? new(operationLog.Recent(id), paperJournal.IsInitialized ? paperJournal.RunInfos(id) : [], !paperJournal.IsInitialized) : null;
     public IReadOnlyList<ReplayRunInfo> Runs(DateOnly? date) => paperJournal.IsInitialized ? paperJournal.RunInfos(date: date?.ToString("yyyy-MM-dd")) : [];
     public ReplayRunComparison Compare(string id, string left, string right)
     {
@@ -90,7 +88,7 @@ public sealed partial class HistoricalReplayService
     public string? Evidence(string id, string runId, long sequence) => OwnsRun(id, runId) ? paperJournal.DecisionEvidence(runId, sequence) : null;
     public bool HasEvidence(string id, string runId) => OwnsRun(id, runId);
     public Task ExportEvidence(Stream output, string id, string runId, CancellationToken token) => paperJournal.Export(output, id, runId, token);
-    public Task ExportOperations(Stream output, string id, CancellationToken token) => paperJournal.ExportOperations(output, id, token);
-    public bool JournalReady => paperJournal.IsInitialized;
-    public Task WaitForJournal(CancellationToken cancellationToken) => journalInitialization.Value.WaitAsync(cancellationToken);
+    public Task ExportOperations(Stream output, string id, CancellationToken token) => operationLog.Export(output, id, token);
+    public bool JournalReady => operationLog.Ready;
+    public Task WaitForJournal(CancellationToken cancellationToken) => operationLog.WhenReady(cancellationToken);
 }

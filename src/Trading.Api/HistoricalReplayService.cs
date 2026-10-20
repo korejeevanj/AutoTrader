@@ -19,8 +19,8 @@ public sealed partial class HistoricalReplayService : BackgroundService
     private readonly HistoricalAcquisition acquisition;
     private readonly TimeProvider clock;
     private readonly string configurationPath;
-    private readonly ReplayPaperJournal paperJournal;
-    private readonly Lazy<Task> journalInitialization;
+    private readonly ReplayEvidenceJournal paperJournal;
+    private readonly ReplayOperationLog operationLog;
     private readonly Channel<string> queue = Channel.CreateUnbounded<string>(new() { SingleReader = true });
     private readonly ConcurrentDictionary<string, RuntimeJob> jobs = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim createGate = new(1, 1);
@@ -73,9 +73,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
         public HashSet<string>? RetryOnlyFailed;
         public string? DiagnosticError;
         public string? CheckpointError;
-        public readonly ConcurrentQueue<PendingOperation> StartupOperations = new();
     }
-    private sealed record PendingOperation(int Run, string? Preset, DateTimeOffset Wall, DateTimeOffset? Simulated, string Severity, string Code, string DetailJson);
 
     public HistoricalReplayService(IOptions<HistoricalReplayOptions> options, IWebHostEnvironment environment,
         KiteHistoricalClient provider, TimeProvider clock, NseHistoricalContractClient exchange, PublishedBankInputsClient bankInputs)
@@ -83,13 +81,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
         this.options = options.Value; this.provider = provider; this.clock = clock;
         store = new(Path.GetFullPath(this.options.RootDirectory, environment.ContentRootPath));
         paperJournal = new(Path.Combine(store.Root, "paper-replay.sqlite"));
-        journalInitialization = new(async () =>
-        {
-            await Task.Run(paperJournal.Initialize);
-            foreach (var runtime in jobs.Values)
-                while (runtime.StartupOperations.TryDequeue(out var operation))
-                    paperJournal.Operation(runtime.Job.Id, operation.Run, operation.Preset, operation.Wall, operation.Simulated, operation.Severity, operation.Code, operation.DetailJson);
-        });
+        operationLog = new(paperJournal);
         configurationPath = Path.GetFullPath(this.options.ReplayConfigurationPath, environment.ContentRootPath);
         acquisition = new(store, new ProviderHistoricalSources(store, provider, exchange, bankInputs), clock, configurationPath, this.options.AcquirePublishedBankInputs);
         if (Directory.Exists(store.JobsRoot))
@@ -155,7 +147,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         stopping = stoppingToken;
-        if (File.Exists(Path.Combine(store.Root, "paper-replay.sqlite"))) _ = journalInitialization.Value;
+        if (File.Exists(Path.Combine(store.Root, "paper-replay.sqlite"))) operationLog.Begin();
         await Task.WhenAll(ProcessQueue(stoppingToken), ArchiveDaily(stoppingToken));
     }
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -180,7 +172,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
             try
             {
                 await Change(runtime, job => job with { Message = "Initializing durable replay storage and indexes; preparation will continue automatically." });
-                await journalInitialization.Value.WaitAsync(runtime.Cancellation.Token);
+                await operationLog.WhenReady(runtime.Cancellation.Token);
                 await Acquire(runtime, runtime.Cancellation.Token);
             }
             catch (Exception error) { await AcquisitionFailed(runtime, error, token.IsCancellationRequested); }

@@ -6,7 +6,7 @@ namespace Trading.Data;
 public sealed record ReplayOperation(long Sequence, int Run, string? Preset, string WallTimeUtc, string? SimulatedTimeUtc, string Severity, string Code, string DetailJson);
 public sealed record ReplayStoredRun(string RunId, string ManifestJson, string SnapshotJson);
 
-public sealed partial class ReplayPaperJournal
+public sealed partial class ReplayEvidenceJournal
 {
     public int NextRunNumber(string jobId, int currentRun)
     {
@@ -39,24 +39,6 @@ public sealed partial class ReplayPaperJournal
         command.CommandText = "SELECT m.manifest_json,r.snapshot_json FROM paper_run_manifests m JOIN paper_runs r USING(run_id) WHERE m.job_id=$job AND m.run_id=$run";
         command.Parameters.AddWithValue("$job", jobId); command.Parameters.AddWithValue("$run", runId); using var reader = command.ExecuteReader();
         return reader.Read() ? new(runId, reader.GetString(0), reader.GetString(1)) : null;
-    }
-    public void Operation(string jobId, int run, string? preset, DateTimeOffset wall, DateTimeOffset? simulated, string severity, string code, string detailJson)
-    {
-        using var connection = Open(); using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO replay_operations(job_id,run_number,preset,wall_time_utc,simulated_time_utc,severity,code,detail_json) VALUES($job,$run,$preset,$wall,$sim,$severity,$code,$detail)";
-        command.Parameters.AddWithValue("$job", jobId); command.Parameters.AddWithValue("$run", run); command.Parameters.AddWithValue("$preset", (object?)preset ?? DBNull.Value);
-        command.Parameters.AddWithValue("$wall", wall.ToString("O")); command.Parameters.AddWithValue("$sim", simulated is { } time ? time.ToString("O") : DBNull.Value);
-        command.Parameters.AddWithValue("$severity", severity); command.Parameters.AddWithValue("$code", code); command.Parameters.AddWithValue("$detail", detailJson); command.ExecuteNonQuery();
-    }
-    public IReadOnlyList<ReplayOperation> Operations(string jobId, int limit = 100)
-    {
-        if (!File.Exists(path)) return [];
-        using var connection = Open(); using var command = connection.CreateCommand();
-        command.CommandText = "SELECT sequence,run_number,preset,wall_time_utc,simulated_time_utc,severity,code,detail_json FROM replay_operations WHERE job_id=$job ORDER BY sequence DESC LIMIT $limit";
-        command.Parameters.AddWithValue("$job", jobId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 1000));
-        using var reader = command.ExecuteReader(); var rows = new List<ReplayOperation>();
-        while (reader.Read()) rows.Add(new(reader.GetInt64(0), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7)));
-        return rows;
     }
     public bool HasRun(string jobId, string runId)
     {
@@ -130,20 +112,6 @@ public sealed partial class ReplayPaperJournal
         {
             cancellationToken.ThrowIfCancellationRequested();
             await writer.WriteLineAsync(JsonSerializer.Serialize(new { type = "evaluationBatch", evidence = JsonSerializer.Deserialize<JsonElement>(payload) }));
-        }
-    }
-    public async Task ExportOperations(Stream output, string jobId, CancellationToken cancellationToken, int? run = null)
-    {
-        await using var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true);
-        await using var writer = new StreamWriter(gzip, leaveOpen: true);
-        using var connection = Open(); using var command = connection.CreateCommand();
-        command.CommandText = "SELECT run_number,preset,wall_time_utc,simulated_time_utc,severity,code,detail_json FROM replay_operations WHERE job_id=$job AND ($run IS NULL OR run_number=0 OR run_number=$run) ORDER BY sequence";
-        command.Parameters.AddWithValue("$job", jobId); command.Parameters.AddWithValue("$run", (object?)run ?? DBNull.Value); using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new { run = reader.GetInt32(0), preset = reader.IsDBNull(1) ? null : reader.GetString(1),
-                wallTimeUtc = reader.GetString(2), simulatedTimeUtc = reader.IsDBNull(3) ? null : reader.GetString(3), severity = reader.GetString(4), code = reader.GetString(5), detail = JsonSerializer.Deserialize<JsonElement>(reader.GetString(6)) }));
         }
     }
 }

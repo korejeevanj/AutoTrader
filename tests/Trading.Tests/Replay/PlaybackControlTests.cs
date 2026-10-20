@@ -23,7 +23,7 @@ public sealed class PlaybackControlTests
         var replay = Trading.Replay.ReplayConfiguration.FromJson(frozen.ReplayJson);
         var engine = Trading.Engine.EngineConfiguration.FromJson(frozen.EngineJson);
         var dataset = Trading.Data.KiteCandleImporter.Load(Path.Combine(root, "attempt-1", "dataset.json"), replay.PublicationLag);
-        var journal = new Trading.Data.ReplayPaperJournal(Path.Combine(fixture.Root, "paper-replay.sqlite"));
+        var journal = new Trading.Data.ReplayEvidenceJournal(Path.Combine(fixture.Root, "paper-replay.sqlite"));
         var runner = new Trading.Replay.ReplayRunner(dataset, replay, engine);
         var session = new Trading.Replay.DurableReplaySession(runner.CreateSession(job.Date, "base"), journal,
             new(job.Id, ready.Job.Run, "base", journal.Checkpoint(ready.PaperRunId!)!.InputHash,
@@ -256,7 +256,7 @@ public sealed class PlaybackControlTests
     [Fact]
     public void Conflicting_snapshot_or_event_evidence_cannot_be_accepted_as_a_duplicate()
     {
-        using var fixture = new ReplayFixture(); var journal = new Trading.Data.ReplayPaperJournal(Path.Combine(fixture.Root, "journal.sqlite"));
+        using var fixture = new ReplayFixture(); var journal = new Trading.Data.ReplayEvidenceJournal(Path.Combine(fixture.Root, "journal.sqlite"));
         journal.Begin("run", "frozen-input");
         Trading.Data.PaperJournalEvent[] events = [new("event", DateTimeOffset.Parse("2026-10-16T04:00:00Z"), "BANKNIFTY", "call", "CANDLE_RESEARCH", "REJECTED", null, "[]")];
         journal.Append("run", "step-1", events[0].TimeUtc, "{}", "{\"cash\":1}", "[]", events);

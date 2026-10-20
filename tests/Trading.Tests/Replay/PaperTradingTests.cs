@@ -76,7 +76,7 @@ public sealed class PaperTradingTests
     public void Paper_batch_transaction_is_idempotent_and_rejects_conflicting_evidence()
     {
         using var fixture = new ReplayFixture();
-        var journal = new ReplayPaperJournal(Path.Combine(fixture.Root, "paper.sqlite"));
+        var journal = new ReplayEvidenceJournal(Path.Combine(fixture.Root, "paper.sqlite"));
         journal.Begin("run", "inputs-v1");
         var time = new DateTimeOffset(2026,10,14,4,0,0,TimeSpan.Zero);
         PaperJournalEvent[] events = [new("event", time, "BANKNIFTY", "option", "CANDLE_RESEARCH", "HYPOTHETICAL_FILLED", "setup", "[]")];

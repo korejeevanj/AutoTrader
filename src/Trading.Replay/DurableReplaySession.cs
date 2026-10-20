@@ -22,7 +22,7 @@ public sealed class DurableReplaySession : IHistoricalReplaySession
         string ControlsJson, IReadOnlyList<PaperJournalEvent> Events);
 
     private readonly IHistoricalReplaySession session;
-    private readonly ReplayPaperJournal journal;
+    private readonly ReplayEvidenceJournal journal;
     private readonly List<PaperEntryControl> controls = [];
     private PendingStep? pending;
     public ReplayEvidenceRun Run { get; }
@@ -30,7 +30,7 @@ public sealed class DurableReplaySession : IHistoricalReplaySession
     public ReplayStep? LastStep { get; private set; }
     public bool HasPendingCommit => pending is not null;
 
-    public DurableReplaySession(IHistoricalReplaySession session, ReplayPaperJournal journal, ReplayEvidenceRun run,
+    public DurableReplaySession(IHistoricalReplaySession session, ReplayEvidenceJournal journal, ReplayEvidenceRun run,
         Action<ReplayStep>? recoveredStep = null)
     {
         if (session.CurrentTimeUtc is not null || session.PaperState is null)
@@ -114,7 +114,7 @@ public sealed class DurableReplaySession : IHistoricalReplaySession
         session.ReleaseCommittedDecisionHistory();
     }
 
-    public static IEnumerable<ReplayDecisionTrace> ReadDecisions(ReplayPaperJournal journal, string runId)
+    public static IEnumerable<ReplayDecisionTrace> ReadDecisions(ReplayEvidenceJournal journal, string runId)
     {
         foreach (var payload in journal.BatchPayloads(runId))
         {

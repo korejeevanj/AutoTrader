@@ -13,7 +13,7 @@ public sealed class DurableReplaySessionTests
         using var fixture = new ReplayFixture();
         var runner = new ReplayRunner(fixture.Load(), fixture.Configuration, fixture.Engine);
         var path = Path.Combine(fixture.Root, "paper.sqlite");
-        var journal = new ReplayPaperJournal(path);
+        var journal = new ReplayEvidenceJournal(path);
         var run = new ReplayEvidenceRun(Guid.NewGuid().ToString("N"), 1, "base", "frozen-inputs",
             new(2026, 10, 9, 3, 45, 0, TimeSpan.Zero), "BANKNIFTY");
         var session = new DurableReplaySession(runner.CreateSession(ReplayFixture.Date, "base"), journal, run);
@@ -48,7 +48,7 @@ public sealed class DurableReplaySessionTests
         using var fixture = new ReplayFixture();
         var runner = new ReplayRunner(fixture.Load(), fixture.Configuration, fixture.Engine);
         var path = Path.Combine(fixture.Root, "paper.sqlite");
-        var journal = new ReplayPaperJournal(path);
+        var journal = new ReplayEvidenceJournal(path);
         var run = new ReplayEvidenceRun(Guid.NewGuid().ToString("N"), 1, "base", "frozen-inputs",
             new(2026, 10, 9, 3, 45, 0, TimeSpan.Zero), "BANKNIFTY");
         var session = new DurableReplaySession(runner.CreateSession(ReplayFixture.Date, "base"), journal, run);

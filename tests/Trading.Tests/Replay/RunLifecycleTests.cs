@@ -27,7 +27,7 @@ public sealed class RunLifecycleTests
     public void Refetch_recovery_adopts_its_staged_new_run_instead_of_the_prior_compatible_run_or_an_extra_replacement()
     {
         using var fixture = new ReplayFixture(); var path = Path.Combine(fixture.Root, "paper.sqlite");
-        var journal = new ReplayPaperJournal(path); var job = Guid.NewGuid().ToString("N");
+        var journal = new ReplayEvidenceJournal(path); var job = Guid.NewGuid().ToString("N");
         var inputs = new ReplayRunInputs(fixture.Load(), fixture.Configuration, fixture.Engine, "same-frozen-inputs", [], []);
         var first = new ReplayRunLifecycle(job, ReplayFixture.Date, journal, TimeProvider.System);
         first.Open(inputs, 0); var previous = first.Number; first.AcknowledgeCheckpoint();
@@ -69,7 +69,7 @@ public sealed class RunLifecycleTests
     public async Task Opening_acknowledgement_cleanup_failure_does_not_stop_preparation_playback_or_the_worker()
     {
         await using var fixture = new HistoricalApiFixture();
-        var path = Path.Combine(fixture.Root, "paper-replay.sqlite"); var journal = new ReplayPaperJournal(path); journal.Initialize();
+        var path = Path.Combine(fixture.Root, "paper-replay.sqlite"); var journal = new ReplayEvidenceJournal(path); journal.Initialize();
         Execute(path, "CREATE TRIGGER fail_ack BEFORE DELETE ON paper_run_openings BEGIN SELECT RAISE(FAIL,'test acknowledgement cleanup failure'); END;");
         fixture.Start(); var first = await fixture.Prepare();
         await fixture.Wait(first.Id, view => view.Job.PreparationComplete && !view.Job.PreparingData);
@@ -87,7 +87,7 @@ public sealed class RunLifecycleTests
     public void Run_opening_identity_and_frozen_bytes_commit_atomically_and_acknowledge_only_a_published_manifest()
     {
         using var fixture = new ReplayFixture(); var path = Path.Combine(fixture.Root, "paper.sqlite");
-        var journal = new ReplayPaperJournal(path); journal.Initialize();
+        var journal = new ReplayEvidenceJournal(path); journal.Initialize();
         var jobId = Guid.NewGuid().ToString("N"); var id = ReplayEvidenceRun.IdFor(jobId, 1, "base");
         const string manifest = "{\"inputHash\":\"frozen-fixture\"}";
         Execute(path, "CREATE TRIGGER fail_opening BEFORE INSERT ON paper_run_openings BEGIN SELECT RAISE(FAIL,'test opening failure'); END;");
@@ -127,7 +127,7 @@ public sealed class RunLifecycleTests
         await fixture.Restart(); await fixture.Command(job.Id, "retry");
         var recovered = await fixture.Wait(job.Id, view => view.Job.CanReplay);
         Assert.Equal(ready.Job.Run + 1, recovered.Job.Run); Assert.Null(recovered.SimulatedTimeUtc);
-        var journal = new ReplayPaperJournal(database);
+        var journal = new ReplayEvidenceJournal(database);
         using var manifest = System.Text.Json.JsonDocument.Parse(journal.Run(job.Id, recovered.PaperRunId!)!.ManifestJson);
         Assert.Equal(openedAt, manifest.RootElement.GetProperty("createdAtUtc").GetDateTimeOffset());
         Assert.Empty(journal.Read(recovered.PaperRunId!)); Assert.Empty(journal.PendingRunOpenings(job.Id));
@@ -180,7 +180,7 @@ public sealed class RunLifecycleTests
     {
         await using var fixture = new HistoricalApiFixture();
         var path = Path.Combine(fixture.Root, "paper-replay.sqlite");
-        var journal = new ReplayPaperJournal(path); journal.Initialize();
+        var journal = new ReplayEvidenceJournal(path); journal.Initialize();
         Execute(path, "CREATE TRIGGER fail_first_manifest BEFORE INSERT ON paper_run_manifests BEGIN SELECT RAISE(FAIL,'test initial manifest failure'); END;");
         fixture.Start(); var job = await fixture.Prepare();
         var pending = await fixture.Wait(job.Id, view => !view.Job.PreparingData && view.DiagnosticError?.Contains("manifest", StringComparison.OrdinalIgnoreCase) == true);
@@ -227,7 +227,7 @@ public sealed class RunLifecycleTests
         Assert.Equal(2, failed.PresetProgress!.Number); Assert.True(failed.PresetProgress.AllPresets);
         Assert.Contains("manifest", failed.DiagnosticError, StringComparison.OrdinalIgnoreCase);
         var id = ReplayEvidenceRun.IdFor(job.Id, ready.Job.Run, "adverse");
-        var journal = new ReplayPaperJournal(path);
+        var journal = new ReplayEvidenceJournal(path);
         Assert.Null(journal.Checkpoint(id)!.TimeUtc);
         using var blocked = await fixture.Client.PostAsJsonAsync($"/api/replay/jobs/{job.Id}/commands", new HistoricalReplayCommand("step"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, blocked.StatusCode);
@@ -246,7 +246,7 @@ public sealed class RunLifecycleTests
     {
         using var fixture = new ReplayFixture();
         var replay = fixture.Configuration with { Presets = [new(), new() { Id = "adverse" }] };
-        var journal = new ReplayPaperJournal(Path.Combine(fixture.Root, "paper.sqlite"));
+        var journal = new ReplayEvidenceJournal(Path.Combine(fixture.Root, "paper.sqlite"));
         var jobId = Guid.NewGuid().ToString("N");
         var lifecycle = new ReplayRunLifecycle(jobId, ReplayFixture.Date, journal, TimeProvider.System);
         lifecycle.Open(new(fixture.Load(), replay, fixture.Engine, "frozen-fixture", [], []), 0);
@@ -280,7 +280,7 @@ public sealed class RunLifecycleTests
         using var restart = await fixture.Client.PostAsJsonAsync($"/api/replay/jobs/{job.Id}/commands", new HistoricalReplayCommand("restart"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, restart.StatusCode);
         var run = ReplayEvidenceRun.IdFor(job.Id, ready.Job.Run + 1, "base");
-        var journal = new ReplayPaperJournal(path);
+        var journal = new ReplayEvidenceJournal(path);
         Assert.Null(journal.Checkpoint(run)!.TimeUtc);
         using var blocked = await fixture.Client.PostAsJsonAsync($"/api/replay/jobs/{job.Id}/commands", new HistoricalReplayCommand("step"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, blocked.StatusCode);

@@ -11,15 +11,16 @@ public sealed record PaperJournalRow(long Sequence, string RunId, string EventId
 public sealed record PaperJournalCheckpoint(string RunId, string InputHash, DateTimeOffset? TimeUtc,
     string SnapshotJson, string ControlsJson);
 
-// Separate from the immutable synthetic plan journal. One transaction commits the
-// complete evaluation batch, lifecycle events and recoverable paper checkpoint.
-public sealed partial class ReplayPaperJournal(string path)
+// Durable replay evidence, separate from the immutable synthetic plan journal. One
+// transaction commits the complete evaluation batch, lifecycle events and recoverable
+// paper checkpoint. The operational log (ReplayOperationLog) shares this file and schema.
+public sealed partial class ReplayEvidenceJournal(string path)
 {
     private readonly object schemaGate = new();
     private bool initialized;
     public bool IsInitialized => Volatile.Read(ref initialized);
     public void Initialize() { using var connection = Open(); }
-    private SqliteConnection Open()
+    internal SqliteConnection Open()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, DefaultTimeout = 30 }.ToString());

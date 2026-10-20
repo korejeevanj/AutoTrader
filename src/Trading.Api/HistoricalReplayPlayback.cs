@@ -357,7 +357,7 @@ public sealed partial class HistoricalReplayService
                 : session => DurableReplaySession.ReadDecisions(paperJournal, ReplayEvidenceRun.IdFor(runtime.Job.Id, run, session.PresetId))));
             Log(runtime, "REPORT_COMPLETED", new { run, sessions = result.Sessions.Count });
             await using (var logs = File.Create(Path.Combine(staging, "runtime.jsonl.gz")))
-                await paperJournal.ExportOperations(logs, runtime.Job.Id, CancellationToken.None, run);
+                await operationLog.Export(logs, runtime.Job.Id, CancellationToken.None, run);
             await HistoricalAcquisitionStore.AtomicJsonAsync(Path.Combine(staging, "complete.json"), new { Complete = true }, CancellationToken.None);
             if (Directory.Exists(output)) Directory.Move(output, output + ".incomplete-" + Guid.NewGuid().ToString("N"));
             Directory.Move(staging, output);

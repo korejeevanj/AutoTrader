@@ -16,7 +16,7 @@ public enum ReplayPlaybackRequest { Step, Resume, CurrentPreset, AllPresets }
 /// eligibility. The host serializes access and supplies pacing and frozen inputs.
 /// A newly attached session cannot advance before its manifest is durable.
 /// </summary>
-public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayPaperJournal journal, TimeProvider clock) : IHistoricalReplaySession
+public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEvidenceJournal journal, TimeProvider clock) : IHistoricalReplaySession
 {
     private IHistoricalReplaySession? session;
     private ReplayRunner? runner;
