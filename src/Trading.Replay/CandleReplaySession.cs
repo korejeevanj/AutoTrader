@@ -7,7 +7,7 @@ using Trading.Risk;
 
 namespace Trading.Replay;
 
-public sealed partial class CandleReplaySession : IHistoricalReplaySession
+public sealed partial class CandleReplaySession : IPaperReplaySession
 {
     private readonly HistoricalDataset dataset;
     private readonly ReplayConfiguration settings;

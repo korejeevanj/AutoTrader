@@ -19,6 +19,8 @@ public enum ReplayPlaybackRequest { Step, Resume, CurrentPreset, AllPresets }
 public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEvidenceJournal journal, TimeProvider clock) : IHistoricalReplaySession
 {
     private IHistoricalReplaySession? session;
+    // Engine-backed runs are always durable; price previews have neither paper trading nor evidence.
+    private DurableReplaySession? durable;
     private ReplayRunner? runner;
     private readonly List<ReplaySessionResult> completed = [];
     private string? pendingManifest;
@@ -33,10 +35,9 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
     public bool PriceOnly => Inputs is not null && !Inputs.Dataset.Manifest.Instruments.Any(item => item.Role == HistoricalInstrumentRole.Futures);
     public bool ManifestPending => pendingManifest is not null;
     public string? ManifestError { get; private set; }
-    private DurableReplaySession? Evidence => session as DurableReplaySession;
-    public string? JournalRunId => Evidence?.Run.Id;
-    public int StepNumber => Evidence?.StepNumber ?? previewStepNumber;
-    public bool HasPendingCommit => Evidence?.HasPendingCommit == true;
+    public string? JournalRunId => durable?.Run.Id;
+    public int StepNumber => durable?.StepNumber ?? previewStepNumber;
+    public bool HasPendingCommit => durable?.HasPendingCommit == true;
     public bool CanPublish => IsComplete && !HasPendingCommit && !ManifestPending && (!AllPresets || !HasRemainingPresets);
     public ReplayStep? LastStep { get; private set; }
 
@@ -63,7 +64,7 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
             {
                 var prior = journal.Checkpoint(ReplayEvidenceRun.IdFor(jobId, number, inputs.Replay.Presets[i].Id));
                 if (prior?.TimeUtc is null) continue;
-                var restored = CreateSession(inputs, nextRunner, number, i, recovery!.AllPresets);
+                var restored = CreateSession(inputs, nextRunner, number, i, recovery!.AllPresets).Session;
                 if (!restored.IsComplete) continue;
                 PersistManifest(inputs, number, i, Manifest(inputs, number, i), recovery!.AllPresets);
                 priorResults.Add(restored.Result);
@@ -118,11 +119,12 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
     public bool IsComplete => session?.IsComplete ?? false;
     public DateTimeOffset? CurrentTimeUtc => session?.CurrentTimeUtc;
     public DateTimeOffset? NextTimeUtc => session?.NextTimeUtc;
-    public IReadOnlyList<ResearchTrade> VisibleTrades => session?.VisibleTrades ?? [];
-    public IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId) => session?.VisibleConstituents(indexId) ?? [];
+    // Paper views are neutral for a price preview: nothing traded, entries not enabled.
+    public IReadOnlyList<ResearchTrade> VisibleTrades => durable?.VisibleTrades ?? [];
+    public IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId) => durable?.VisibleConstituents(indexId) ?? [];
     public ReplaySessionResult Result => session?.Result ?? throw new InvalidOperationException("Open a replay dataset first.");
-    public bool PaperEntriesPaused => session?.PaperEntriesPaused ?? true;
-    public PaperStateView? PaperState => session?.PaperState;
+    public bool PaperEntriesPaused => durable?.PaperEntriesPaused ?? true;
+    public PaperStateView? PaperState => durable?.PaperState;
     public void Pause() => session?.Pause();
     public void Resume() { EnsureManifest(); session!.Resume(); }
     public ReplayStep? Step()
@@ -134,9 +136,9 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
             if (step is not null) { LastStep = step; if (PriceOnly) previewStepNumber++; }
             return step;
         }
-        catch { LastStep = Evidence?.LastStep ?? LastStep; throw; }
+        catch { LastStep = durable?.LastStep ?? LastStep; throw; }
     }
-    public void SetPaperEntriesPaused(bool paused) { EnsureManifest(); session!.SetPaperEntriesPaused(paused); }
+    public void SetPaperEntriesPaused(bool paused) { EnsureManifest(); durable?.SetPaperEntriesPaused(paused); }
     public void ReleaseCommittedDecisionHistory() { EnsureManifest(); session!.ReleaseCommittedDecisionHistory(); }
 
     public void AcknowledgeCheckpoint()
@@ -147,23 +149,25 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
         { /* Manifest and host checkpoint are durable. Retain the safe stage and retry cleanup on a later checkpoint. */ }
     }
 
-    private IHistoricalReplaySession CreateSession(ReplayRunInputs inputs, ReplayRunner? source, int number, int preset, bool allPresets,
-        Action<ReplayStep>? recoveredStep = null)
+    // A price preview has no durable evidence; an engine-backed run is its own durable session.
+    private (IHistoricalReplaySession Session, DurableReplaySession? Durable) CreateSession(ReplayRunInputs inputs, ReplayRunner? source,
+        int number, int preset, bool allPresets, Action<ReplayStep>? recoveredStep = null)
     {
-        if (source is null) return new PriceOnlyReplaySession(inputs.Dataset, date, inputs.Replay.PublicationLag);
+        if (source is null) return (new PriceOnlyReplaySession(inputs.Dataset, date, inputs.Replay.PublicationLag), null);
         var id = ReplayEvidenceRun.IdFor(jobId, number, inputs.Replay.Presets[preset].Id);
         if (!journal.HasRun(jobId, id)) journal.StageRunOpening(jobId, id, inputs.InputHash, Manifest(inputs, number, preset), allPresets);
-        return new DurableReplaySession(source.CreateSession(date, inputs.Replay.Presets[preset].Id), journal,
+        var created = new DurableReplaySession(source.CreateSession(date, inputs.Replay.Presets[preset].Id), journal,
             new(jobId, number, inputs.Replay.Presets[preset].Id, inputs.InputHash,
                 HistoricalAcquisitionStore.Midnight(date, inputs.Dataset.Manifest.Indices[0].TimeZone).Add(inputs.Dataset.Manifest.MarketOpen.ToTimeSpan()),
                 inputs.Dataset.Manifest.Indices[0].Id), recoveredStep);
+        return (created, created);
     }
-    private void Install(ReplayRunInputs inputs, ReplayRunner? source, IHistoricalReplaySession next, int number, int preset,
-        bool allPresets, IReadOnlyList<ReplaySessionResult> results, bool recovered)
+    private void Install(ReplayRunInputs inputs, ReplayRunner? source, (IHistoricalReplaySession Session, DurableReplaySession? Durable) next,
+        int number, int preset, bool allPresets, IReadOnlyList<ReplaySessionResult> results, bool recovered)
     {
         var manifest = source is null ? null : Manifest(inputs, number, preset);
-        Inputs = inputs; runner = source; session = next; Number = number; PresetIndex = preset; AllPresets = allPresets;
-        Recovered = recovered; previewStepNumber = 0; LastStep = Evidence?.LastStep;
+        Inputs = inputs; runner = source; session = next.Session; durable = next.Durable; Number = number; PresetIndex = preset; AllPresets = allPresets;
+        Recovered = recovered; previewStepNumber = 0; LastStep = durable?.LastStep;
         completed.Clear(); completed.AddRange(results);
         pendingManifest = manifest; openingStaged = false; ManifestError = null; session.Pause();
         EnsureManifest();

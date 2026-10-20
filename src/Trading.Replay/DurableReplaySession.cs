@@ -15,13 +15,13 @@ public sealed record ReplayEvidenceRun(string JobId, int Number, string PresetId
 /// the exact envelope commits, before another step or history release is allowed.
 /// The host serializes access and retains pacing and presentation ownership.
 /// </summary>
-public sealed class DurableReplaySession : IHistoricalReplaySession
+public sealed class DurableReplaySession : IPaperReplaySession
 {
     private sealed record PaperEntryControl(DateTimeOffset? TimeUtc, bool Paused);
     private sealed record PendingStep(ReplayStep Step, string Id, string PayloadJson, string SnapshotJson,
         string ControlsJson, IReadOnlyList<PaperJournalEvent> Events);
 
-    private readonly IHistoricalReplaySession session;
+    private readonly IPaperReplaySession session;
     private readonly ReplayEvidenceJournal journal;
     private readonly List<PaperEntryControl> controls = [];
     private PendingStep? pending;
@@ -30,10 +30,10 @@ public sealed class DurableReplaySession : IHistoricalReplaySession
     public ReplayStep? LastStep { get; private set; }
     public bool HasPendingCommit => pending is not null;
 
-    public DurableReplaySession(IHistoricalReplaySession session, ReplayEvidenceJournal journal, ReplayEvidenceRun run,
+    public DurableReplaySession(IPaperReplaySession session, ReplayEvidenceJournal journal, ReplayEvidenceRun run,
         Action<ReplayStep>? recoveredStep = null)
     {
-        if (session.CurrentTimeUtc is not null || session.PaperState is null)
+        if (session.CurrentTimeUtc is not null)
             throw new ArgumentException("Supply a fresh engine-backed replay session.", nameof(session));
         if (run.Number < 1 || string.IsNullOrWhiteSpace(run.JobId) || string.IsNullOrWhiteSpace(run.PresetId)
             || string.IsNullOrWhiteSpace(run.InputHash) || string.IsNullOrWhiteSpace(run.IndexId))
@@ -54,7 +54,7 @@ public sealed class DurableReplaySession : IHistoricalReplaySession
     public IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId) => session.VisibleConstituents(indexId);
     public ReplaySessionResult Result => session.Result;
     public bool PaperEntriesPaused => session.PaperEntriesPaused;
-    public PaperStateView? PaperState => session.PaperState;
+    public PaperStateView PaperState => session.PaperState;
     public void Pause() => session.Pause();
     public void Resume() => session.Resume();
 

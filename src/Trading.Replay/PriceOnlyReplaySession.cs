@@ -3,22 +3,28 @@ using Trading.Engine;
 
 namespace Trading.Replay;
 
+/// <summary>What every replay session answers: its clock, steps and result.</summary>
 public interface IHistoricalReplaySession
 {
     bool IsPaused { get; }
     bool IsComplete { get; }
     DateTimeOffset? CurrentTimeUtc { get; }
     DateTimeOffset? NextTimeUtc { get; }
-    IReadOnlyList<ResearchTrade> VisibleTrades { get; }
-    IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId);
     void Pause();
     void Resume();
     ReplayStep? Step();
     void ReleaseCommittedDecisionHistory();
     ReplaySessionResult Result { get; }
+}
+
+/// <summary>Engine-backed sessions also simulate paper trading; price-only sessions never do.</summary>
+public interface IPaperReplaySession : IHistoricalReplaySession
+{
+    IReadOnlyList<ResearchTrade> VisibleTrades { get; }
+    IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId);
     bool PaperEntriesPaused { get; }
     void SetPaperEntriesPaused(bool paused);
-    PaperStateView? PaperState { get; }
+    PaperStateView PaperState { get; }
 }
 
 // An incomplete contract catalogue must not make already downloaded prices unplayable.
@@ -42,11 +48,6 @@ public sealed class PriceOnlyReplaySession : IHistoricalReplaySession
     public bool IsComplete => position == batches.Count;
     public DateTimeOffset? CurrentTimeUtc { get; private set; }
     public DateTimeOffset? NextTimeUtc => IsComplete ? null : batches[position].TimeUtc;
-    public IReadOnlyList<ResearchTrade> VisibleTrades => [];
-    public bool PaperEntriesPaused => true;
-    public void SetPaperEntriesPaused(bool paused) { }
-    public PaperStateView? PaperState => null;
-    public IReadOnlyList<ReplayConstituentView> VisibleConstituents(string indexId) => [];
     public void Pause() => IsPaused = true;
     public void Resume() => IsPaused = false;
     public ReplayStep? Step()

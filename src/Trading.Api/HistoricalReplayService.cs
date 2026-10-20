@@ -37,7 +37,7 @@ public sealed partial class HistoricalReplayService : BackgroundService
         public ReplayConfiguration? Replay;
         public EngineConfiguration? Engine;
         public ReplayRunLifecycle? Lifecycle;
-        public IHistoricalReplaySession? Session => Lifecycle?.HasSession == true ? Lifecycle : null;
+        public ReplayRunLifecycle? Session => Lifecycle?.HasSession == true ? Lifecycle : null;
         public ReplayStep? LastStep => Lifecycle?.LastStep;
         public readonly Queue<ReplayUiDecision> Decisions = new();
         public Task? Playback;
