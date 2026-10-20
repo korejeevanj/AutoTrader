@@ -37,7 +37,7 @@ public sealed class ReplayCommandPolicyTests
     [Fact]
     public void Publishing_blocks_everything_except_cancel_and_the_log_check_comes_first()
     {
-        var facts = Ready() with { Publishing = true, State = ReplayJobState.Reporting };
+        var facts = Ready() with { Phase = ReplayJobPhase.Publishing, State = ReplayJobState.Reporting };
 
         Rejected("Wait for report publication before changing replay state.", Decide(facts, new ReplayCommand.Pause()));
         Assert.IsType<ReplayCommandDecision.Proceed>(Decide(facts, new ReplayCommand.Cancel()));
@@ -64,7 +64,7 @@ public sealed class ReplayCommandPolicyTests
         ReplayCommand command = pause ? new ReplayCommand.Pause() : new ReplayCommand.Cancel();
 
         Assert.IsType<ReplayCommandDecision.NoOp>(Decide(facts, command));
-        Assert.IsType<ReplayCommandDecision.Proceed>(Decide(facts with { Acquiring = true }, command));
+        Assert.IsType<ReplayCommandDecision.Proceed>(Decide(facts with { Phase = ReplayJobPhase.Acquiring }, command));
     }
 
     [Fact]
@@ -77,8 +77,26 @@ public sealed class ReplayCommandPolicyTests
     }
 
     [Fact]
-    public void Retry_while_acquisition_is_still_stopping_proceeds_so_the_module_can_defer_it() =>
-        Assert.IsType<ReplayCommandDecision.Proceed>(Decide(Ready() with { State = ReplayJobState.Failed, Acquiring = true }, new ReplayCommand.Retry()));
+    public void Retry_while_acquisition_is_still_stopping_is_deferred_until_the_worker_is_free()
+    {
+        const ReplayJobPhase stopping = ReplayJobPhase.Acquiring | ReplayJobPhase.Stopping;
+
+        Assert.IsType<ReplayCommandDecision.Defer>(Decide(Ready() with { State = ReplayJobState.Failed, Phase = stopping }, new ReplayCommand.Retry()));
+        Assert.IsType<ReplayCommandDecision.Defer>(Decide(Ready() with { State = ReplayJobState.Cancelled, Phase = stopping }, new ReplayCommand.Retry()));
+    }
+
+    [Fact]
+    public void Retry_while_acquisition_is_running_normally_changes_nothing() =>
+        Assert.IsType<ReplayCommandDecision.NoOp>(Decide(Ready() with { State = ReplayJobState.Downloading, Phase = ReplayJobPhase.Acquiring }, new ReplayCommand.Retry()));
+
+    [Fact]
+    public void A_phase_exposes_what_the_job_is_doing_beyond_its_state()
+    {
+        var facts = new ReplayJobFacts { Phase = ReplayJobPhase.Acquiring | ReplayJobPhase.Stopping | ReplayJobPhase.Publishing };
+
+        Assert.True(facts.Acquiring); Assert.True(facts.Stopping); Assert.True(facts.Publishing);
+        Assert.False(new ReplayJobFacts().Acquiring);
+    }
 
     [Theory]
     [InlineData(true)] [InlineData(false)]
@@ -89,7 +107,7 @@ public sealed class ReplayCommandPolicyTests
 
         Assert.IsType<ReplayCommandDecision.Proceed>(Decide(withTargets, command));
         const string running = "Pause playback and wait for acquisition/reporting before retrying failed requests.";
-        Rejected(running, Decide(withTargets with { Acquiring = true }, command));
+        Rejected(running, Decide(withTargets with { Phase = ReplayJobPhase.Acquiring }, command));
         Rejected(running, Decide(withTargets with { State = ReplayJobState.Playing }, command));
         Rejected(running, Decide(withTargets with { State = ReplayJobState.Reporting }, command));
         Rejected("There are no matching acquisition gaps. Empty responses require Refresh coverage gaps, not Retry failed requests.",
@@ -101,7 +119,7 @@ public sealed class ReplayCommandPolicyTests
     {
         Assert.IsType<ReplayCommandDecision.NoOp>(Decide(Ready(), new ReplayCommand.CancelPreparation()));
         Assert.IsType<ReplayCommandDecision.Proceed>(Decide(Ready() with { State = ReplayJobState.Downloading }, new ReplayCommand.CancelPreparation()));
-        Assert.IsType<ReplayCommandDecision.Proceed>(Decide(Ready() with { Acquiring = true, PriceOnly = true, SessionStarted = true }, new ReplayCommand.CancelPreparation()));
+        Assert.IsType<ReplayCommandDecision.Proceed>(Decide(Ready() with { Phase = ReplayJobPhase.Acquiring, PriceOnly = true, SessionStarted = true }, new ReplayCommand.CancelPreparation()));
     }
 
     [Fact]
@@ -120,7 +138,7 @@ public sealed class ReplayCommandPolicyTests
         Assert.IsType<ReplayCommandDecision.Proceed>(Decide(Ready(), new ReplayCommand.SetProfitExit(policy)));
         const string state = "Pause a fully prepared strategy replay before changing its profit-exit policy.";
         foreach (var blocked in new[] { Ready() with { CanReplay = false }, Ready() with { PriceOnly = true }, Ready() with { HasSession = false },
-            Ready() with { Acquiring = true }, Ready() with { State = ReplayJobState.Playing } })
+            Ready() with { Phase = ReplayJobPhase.Acquiring }, Ready() with { State = ReplayJobState.Playing } })
             Rejected(state, Decide(blocked, new ReplayCommand.SetProfitExit(policy)));
         Rejected("Engine-backed paper state is required.", Decide(Ready() with { HasPaperState = false }, new ReplayCommand.SetProfitExit(policy)));
         Rejected("Close open/pending paper positions before changing policy, or explicitly restart the replay first.",

@@ -19,18 +19,24 @@ public sealed record ReplayJob(string Id, DateOnly Date, bool Refresh, string Re
 /// A snapshot is published only after the change that produced it was checkpointed, and its
 /// Revision rises on every publication.
 /// </summary>
-public sealed record ReplayJobSnapshot(ReplayJob Job, bool Acquiring, long Revision, bool PriceOnly,
+public sealed record ReplayJobSnapshot(ReplayJob Job, ReplayJobPhase Phase, bool RetryPending, long Revision, bool PriceOnly,
     DateTimeOffset? SimulatedTimeUtc, bool Paused, bool Complete,
     HistoricalDataset? Dataset, ReplayConfiguration? Replay, EngineConfiguration? Engine, int PresetIndex, bool AllPresets,
     ReplayStep? LastStep, IReadOnlyList<ReplayDecisionTrace> Decisions, IReadOnlyList<ResearchTrade> Trades,
     IReadOnlyList<ReplayConstituentView> Constituents, PaperStateView? Paper, string? PaperRunId, ReplayTiming? Timing,
     bool JournalPending, string? FailureNotice, IReadOnlyList<string> ReportFiles,
-    AcquisitionAttemptEvidence AttemptEvidence, HistoricalReadinessSummary? Qualification);
+    AcquisitionAttemptEvidence AttemptEvidence, HistoricalReadinessSummary? Qualification)
+{
+    /// <summary>The acquisition worker still owns the job, even if its state already reads Failed or Cancelled.</summary>
+    public bool Acquiring => Phase.HasFlag(ReplayJobPhase.Acquiring);
+}
 
 public abstract record ReplayCommandResult
 {
     public sealed record Applied(ReplayJobSnapshot Snapshot) : ReplayCommandResult;
     public sealed record NoOp(ReplayJobSnapshot Snapshot) : ReplayCommandResult;
+    /// <summary>Accepted, and will take effect when the acquisition worker releases the job; the snapshot says so via RetryPending.</summary>
+    public sealed record Deferred(ReplayJobSnapshot Snapshot) : ReplayCommandResult;
     public sealed record Rejected(string Message) : ReplayCommandResult;
     /// <summary>Local storage failed while applying the command; the job is paused or failed and visible as such.</summary>
     public sealed record StorageUnavailable : ReplayCommandResult;

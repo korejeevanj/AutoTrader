@@ -4,7 +4,7 @@ namespace Trading.Replay;
 
 public sealed partial class ReplayJobs
 {
-    private async Task ResetSession(RuntimeJob runtime, bool recoverCurrent = false)
+    private async Task ResetSession(ReplayJobRuntime runtime, bool recoverCurrent = false)
     {
         var previousRun = runtime.Job.Run;
         runtime.Decisions.Clear(); runtime.Batch = false;
@@ -29,7 +29,7 @@ public sealed partial class ReplayJobs
             runtime.Job = runtime.Job with { State = ReplayJobState.Paused, ReportsAvailable = false };
             runtime.RecoverSavedRun = true;
             try { await Save(runtime); }
-            catch (Exception error) when (error is IOException or System.Data.Common.DbException) { /* The staged journal opening remains recoverable if the host checkpoint also fails. */ }
+            catch (Exception error) when (StorageFailure.Is(error)) { /* The staged journal opening remains recoverable if the host checkpoint also fails. */ }
             throw;
         }
         finally
@@ -42,7 +42,7 @@ public sealed partial class ReplayJobs
         Log(runtime, "RUN_OPENED", new { runtime.JournalRunId, runtime.Job.Run });
     }
 
-    private static void SyncRun(RuntimeJob runtime)
+    private static void SyncRun(ReplayJobRuntime runtime)
     {
         if (runtime.Lifecycle?.HasSession != true) return;
         var lifecycle = runtime.Lifecycle;
@@ -53,7 +53,7 @@ public sealed partial class ReplayJobs
             Mode = lifecycle.Inputs.Dataset.Manifest.IsSynthetic ? "SYNTHETIC TEST" : lifecycle.PriceOnly ? "PAPER + REPLAY — PRICE ONLY" : "PAPER + REPLAY — PAPER TRADER (CANDLE MODEL)" };
     }
 
-    private void SyncRunPresentation(RuntimeJob runtime, (int Run, int Preset) previous)
+    private void SyncRunPresentation(ReplayJobRuntime runtime, (int Run, int Preset) previous)
     {
         SyncRun(runtime);
         if (previous != (runtime.Job.Run, runtime.PresetIndex))
@@ -65,14 +65,14 @@ public sealed partial class ReplayJobs
         { runtime.Job = runtime.Job with { State = ReplayJobState.Paused, ReportsAvailable = false }; PublishSnapshot(runtime); }
     }
 
-    private bool CompletePreset(RuntimeJob runtime)
+    private bool CompletePreset(ReplayJobRuntime runtime)
     {
         var previous = (runtime.Job.Run, runtime.PresetIndex);
         try { return runtime.Lifecycle!.CompletePreset(); }
         finally { SyncRunPresentation(runtime, previous); }
     }
 
-    private void Advance(RuntimeJob runtime)
+    private void Advance(ReplayJobRuntime runtime)
     {
         var started = clock.GetTimestamp();
         try
@@ -92,7 +92,7 @@ public sealed partial class ReplayJobs
         }
     }
 
-    private async Task PlayLoop(RuntimeJob runtime, int loop)
+    private async Task PlayLoop(ReplayJobRuntime runtime, int loop)
     {
         try
         {
@@ -149,11 +149,11 @@ public sealed partial class ReplayJobs
         }
     }
 
-    private static void WakePlayback(RuntimeJob runtime)
+    private static void WakePlayback(ReplayJobRuntime runtime)
     { var previous = runtime.Wake; runtime.Wake = new(); previous.Cancel(); previous.Dispose(); }
 
     // The caller counted this work before starting it, so WhenIdleAsync cannot report quiescence early.
-    private async Task Publish(RuntimeJob runtime)
+    private async Task Publish(ReplayJobRuntime runtime)
     {
         try
         {

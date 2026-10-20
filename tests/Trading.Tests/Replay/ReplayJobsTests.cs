@@ -85,13 +85,19 @@ public sealed class ReplayJobsTests
         await entered.Task;
 
         Assert.IsType<ReplayCommandResult.Applied>(await fixture.Jobs.SendAsync(id, new ReplayCommand.Cancel()));
-        Assert.Equal(ReplayJobState.Cancelled, fixture.Jobs.Snapshot(id)!.Job.State);
-        Assert.IsType<ReplayCommandResult.Applied>(await fixture.Jobs.SendAsync(id, new ReplayCommand.Retry()));
+        var cancelled = fixture.Jobs.Snapshot(id)!;
+        Assert.Equal(ReplayJobState.Cancelled, cancelled.Job.State);
+        Assert.Equal(ReplayJobPhase.Acquiring | ReplayJobPhase.Stopping, cancelled.Phase); // the state says Cancelled, the worker has not let go
+        Assert.False(cancelled.RetryPending);
+
+        var retry = Assert.IsType<ReplayCommandResult.Deferred>(await fixture.Jobs.SendAsync(id, new ReplayCommand.Retry()));
+        Assert.True(retry.Snapshot.RetryPending);
         Assert.Equal("Retry will resume once the current acquisition stops.", fixture.Jobs.Snapshot(id)!.Job.Message);
         release.SetResult();
 
-        await fixture.Until(id, Prepared);
-        Assert.True(fixture.Jobs.Snapshot(id)!.Job.CanReplay);
+        var resumed = await fixture.Until(id, Prepared);
+        Assert.True(resumed.Job.CanReplay);
+        Assert.False(resumed.RetryPending); Assert.Equal(ReplayJobPhase.Idle, resumed.Phase);
         // The download interrupted by the cancel was never pinned, so only that instrument is fetched again.
         var repeated = fixture.Sources.Requested.GroupBy(instrument => instrument).Where(group => group.Count() > 1).ToArray();
         Assert.Equal(18, fixture.Sources.Requested.Distinct().Count());

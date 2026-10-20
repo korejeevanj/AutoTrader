@@ -30,7 +30,7 @@ public sealed partial class ReplayJobs
     private readonly TimeProvider clock;
     private readonly ReplayJobsOptions options;
     private readonly Channel<string> queue = Channel.CreateUnbounded<string>(new() { SingleReader = true });
-    private readonly ConcurrentDictionary<string, RuntimeJob> jobs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ReplayJobRuntime> jobs = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim createGate = new(1, 1);
     private readonly WorkTracker work = new();
     private CancellationToken stopping;
@@ -39,60 +39,6 @@ public sealed partial class ReplayJobs
 
     /// <summary>Raised after every published snapshot, under the job's gate; handlers must not block.</summary>
     public event Action<ReplayJobSnapshot>? Changed;
-
-    private sealed class RuntimeJob(ReplayJob job)
-    {
-        public ReplayJob Job = job;
-        public readonly SemaphoreSlim Gate = new(1, 1);
-        public CancellationTokenSource Cancellation = new();
-        public HistoricalDataset? Dataset;
-        public ReplayConfiguration? Replay;
-        public EngineConfiguration? Engine;
-        public ReplayRunLifecycle? Lifecycle;
-        public ReplayRunLifecycle? Session => Lifecycle?.HasSession == true ? Lifecycle : null;
-        public ReplayStep? LastStep => Lifecycle?.LastStep;
-        public readonly Queue<ReplayDecisionTrace> Decisions = new();
-        public Task? Playback;
-        public bool Batch;
-        public bool AllPresets => Lifecycle?.HasSession == true ? Lifecycle.AllPresets : Job.AllPresets;
-        public double Speed = 60;
-        public int PresetIndex => Lifecycle?.PresetIndex ?? 0;
-        public bool Acquiring;
-        public bool RetryAfterAcquisition;
-        public bool Publishing;
-        public bool PlayLoopActive;
-        public int PlayLoopId;
-        public bool PriceOnly => Lifecycle?.PriceOnly ?? false;
-        public HistoricalDataset? EnrichedDataset;
-        public ReplayConfiguration? EnrichedReplay;
-        public EngineConfiguration? EnrichedEngine;
-        public string? JournalRunId => Lifecycle?.JournalRunId;
-        public int StepNumber => Lifecycle?.StepNumber ?? 0;
-        public bool JournalPending => Lifecycle?.HasPendingCommit == true;
-        public bool RecoverSavedRun;
-        public ReplayPacingClock? Pacer;
-        public CancellationTokenSource Wake = new();
-        public long Revision;
-        public ReplayJobSnapshot? Published;
-        public HistoricalReadinessSummary? Qualification;
-        public AcquisitionAttemptEvidence AttemptEvidence = new(job.Attempt, job.Date,
-            job.Instruments.Select(row => new HistoricalInstrumentAcquisition(row.Id, row.Token, row.Role, row.State, row.Rows, row.Cached, row.Error)));
-        public HashSet<string>? RetryOnlyFailed;
-        public string? DiagnosticError;
-        public string? CheckpointError;
-    }
-
-    /// <summary>Counts queued, acquiring, playing and publishing work so a caller can await quiescence.</summary>
-    private sealed class WorkTracker
-    {
-        private readonly object gate = new();
-        private int active;
-        private TaskCompletionSource idle = Completed();
-        private static TaskCompletionSource Completed() { var done = new TaskCompletionSource(); done.SetResult(); return done; }
-        public void Begin() { lock (gate) { if (active++ == 0) idle = new(TaskCreationOptions.RunContinuationsAsynchronously); } }
-        public void End() { lock (gate) { if (--active == 0) idle.TrySetResult(); } }
-        public Task WhenIdle() { lock (gate) return idle.Task; }
-    }
 
     public ReplayJobs(HistoricalAcquisitionStore store, HistoricalAcquisition acquisition, IHistoricalSources sources,
         ReplayEvidenceJournal journal, ReplayOperationLog operationLog, TimeProvider clock, ReplayJobsOptions options)
@@ -106,7 +52,7 @@ public sealed partial class ReplayJobs
                 try { job = HistoricalAcquisitionStore.Read<ReplayJob>(file); }
                 catch (Exception error) when (error is IOException or JsonException or InvalidDataException) { continue; }
                 if (job is null || !Guid.TryParseExact(job.Id, "N", out _)) continue;
-                jobs[job.Id] = new RuntimeJob(job with { CanReplay = false,
+                jobs[job.Id] = new ReplayJobRuntime(job with { CanReplay = false,
                     State = job.ReportsAvailable ? ReplayJobState.Completed : ReplayJobState.Interrupted,
                     Message = "Server restarted. Retry preparation to recover the paused paper replay from pinned inputs." }) { RecoverSavedRun = true };
             }
@@ -159,7 +105,7 @@ public sealed partial class ReplayJobs
             var closed = calendar.Status == "MarketClosed";
             var job = new ReplayJob(id, date, refresh, fingerprint, closed ? ReplayJobState.MarketClosed : ReplayJobState.Queued,
                 calendar.Message, calendar.Status, null, [], [], 0, 0, false, "PAPER + REPLAY — CANDLE RESEARCH", clock.GetUtcNow());
-            var runtime = new RuntimeJob(job);
+            var runtime = new ReplayJobRuntime(job);
             jobs[id] = runtime;
             await Save(runtime);
             replayRequested = true;
@@ -231,7 +177,7 @@ public sealed partial class ReplayJobs
         }
     }
 
-    private async Task AcquisitionFailed(RuntimeJob runtime, Exception error, bool stopping)
+    private async Task AcquisitionFailed(ReplayJobRuntime runtime, Exception error, bool stopping)
     {
         var code = error is HistoricalStorageException ? "LOCAL_STORAGE_UNAVAILABLE"
             : error is KiteDataException providerError ? providerError.Code : error is OperationCanceledException ? "ACQUISITION_CANCELLED" : "ACQUISITION_FAILED";
@@ -266,7 +212,7 @@ public sealed partial class ReplayJobs
         finally { runtime.Gate.Release(); }
     }
 
-    private async Task Acquire(RuntimeJob runtime, CancellationToken token)
+    private async Task Acquire(ReplayJobRuntime runtime, CancellationToken token)
     {
         var day = runtime.Job.Date;
         var outcome = await acquisition.PrepareAsync(new(runtime.Job.Id, day, runtime.Job.CalendarStatus, runtime.Job.Attempt,
@@ -274,7 +220,7 @@ public sealed partial class ReplayJobs
         if (outcome is not AcquisitionOutcome.Acquired acquired) { await Conclude(runtime, outcome); return; }
         var (calendar, attempt, frozen, plan, manifestPath) = (acquired.Session, acquired.Attempt, acquired.Frozen, acquired.Plan, acquired.ManifestPath);
         var verdict = PreparationVerdict.Evaluate(ReplayConfiguration.FromJson(frozen.ReplayJson),
-            ApplyProfitExit(EngineConfiguration.FromJson(frozen.EngineJson), runtime.Job.ProfitExitOverride), plan, manifestPath, day, calendar.Open, calendar.Close);
+            ApplyStoredProfitExit(EngineConfiguration.FromJson(frozen.EngineJson), runtime.Job.ProfitExitOverride), plan, manifestPath, day, calendar.Open, calendar.Close);
         var (replay, engine, dataset, qualification) = (verdict.Replay, verdict.Engine, verdict.Dataset, verdict.Qualification);
         runtime.RetryOnlyFailed = null;
         Log(runtime, "VALIDATION_COMPLETED", new { dataErrors = verdict.DataErrors, issues = dataset.Issues.Count, coverage = dataset.Coverage },
@@ -340,10 +286,10 @@ public sealed partial class ReplayJobs
         }
     }
 
-    private async Task Change(RuntimeJob runtime, Func<ReplayJob, ReplayJob> update)
+    private async Task Change(ReplayJobRuntime runtime, Func<ReplayJob, ReplayJob> update)
     { await runtime.Gate.WaitAsync(); try { runtime.Job = update(runtime.Job); await Save(runtime); } finally { runtime.Gate.Release(); } }
 
-    private async Task Save(RuntimeJob runtime)
+    private async Task Save(ReplayJobRuntime runtime)
     {
         SyncRun(runtime);
         runtime.Job = runtime.Job with { UpdatedAtUtc = clock.GetUtcNow(), AllPresets = runtime.AllPresets };
@@ -356,7 +302,7 @@ public sealed partial class ReplayJobs
         PublishSnapshot(runtime);
     }
 
-    private void CheckpointFailed(RuntimeJob runtime)
+    private void CheckpointFailed(ReplayJobRuntime runtime)
     {
         runtime.Session?.Pause(); runtime.Qualification = null;
         runtime.CheckpointError = "Local storage is unavailable. Restore write access and retry preparation; previously cached sources remain preserved.";
@@ -365,7 +311,7 @@ public sealed partial class ReplayJobs
         PublishSnapshot(runtime);
     }
 
-    private void PublishSnapshot(RuntimeJob runtime)
+    private void PublishSnapshot(ReplayJobRuntime runtime)
     {
         runtime.Revision++;
         var snapshot = BuildSnapshot(runtime);
@@ -374,19 +320,8 @@ public sealed partial class ReplayJobs
         catch { /* An observer failure must never fail the job that is being checkpointed. */ }
     }
 
-    private ReplayJobSnapshot BuildSnapshot(RuntimeJob runtime)
-    {
-        var session = runtime.Session; var inputs = runtime.Lifecycle?.Inputs;
-        return new(runtime.Job, runtime.Acquiring, runtime.Revision, runtime.PriceOnly,
-            session?.CurrentTimeUtc, session?.IsPaused ?? true, session?.IsComplete ?? false,
-            inputs?.Dataset ?? runtime.Dataset, inputs?.Replay ?? runtime.Replay, inputs?.Engine ?? runtime.Engine,
-            runtime.PresetIndex, runtime.AllPresets, runtime.LastStep, runtime.Decisions.ToArray(),
-            session?.VisibleTrades ?? [], session?.VisibleConstituents("BANKNIFTY") ?? [], session?.PaperState, runtime.JournalRunId,
-            runtime.Pacer?.Snapshot(session?.IsPaused ?? true, runtime.Batch), runtime.JournalPending,
-            runtime.CheckpointError ?? runtime.Lifecycle?.ManifestError ?? runtime.DiagnosticError,
-            runtime.Job.ReportsAvailable ? Reports.Where(file => ReportPath(runtime.Job.Id, runtime.Job.Run, file) is not null).ToArray() : [],
-            runtime.AttemptEvidence, runtime.Qualification);
-    }
+    private ReplayJobSnapshot BuildSnapshot(ReplayJobRuntime runtime) => runtime.Snapshot(
+        runtime.Job.ReportsAvailable ? Reports.Where(file => ReportPath(runtime.Job.Id, runtime.Job.Run, file) is not null).ToArray() : []);
 
     public string? ReportPath(string id, int run, string file)
     {
@@ -395,7 +330,7 @@ public sealed partial class ReplayJobs
         return File.Exists(Path.Combine(root, "complete.json")) && File.Exists(Path.Combine(root, file)) ? Path.Combine(root, file) : null;
     }
 
-    private void Log(RuntimeJob runtime, string code, object? detail = null, string severity = "Information", bool acquisition = false)
+    private void Log(ReplayJobRuntime runtime, string code, object? detail = null, string severity = "Information", bool acquisition = false)
     {
         var json = JsonSerializer.Serialize(detail ?? new { }, KiteCandleImporter.JsonOptions);
         try
@@ -410,7 +345,7 @@ public sealed partial class ReplayJobs
                 default: runtime.DiagnosticError = null; break;
             }
         }
-        catch (Exception error) when (error is IOException or System.Data.Common.DbException)
+        catch (Exception error) when (StorageFailure.Is(error))
         {
             runtime.DiagnosticError = "Operational log storage is unavailable. Restore storage before continuing replay.";
             runtime.Session?.Pause(); runtime.Job = runtime.Job with { State = runtime.Job.CanReplay ? ReplayJobState.Paused : ReplayJobState.Failed, Message = runtime.DiagnosticError };

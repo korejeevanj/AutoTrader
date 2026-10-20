@@ -14,7 +14,7 @@ public sealed class ReplayEvidenceVerdictTests
         bool priceOnly = false, bool canReplay = true, bool preparationComplete = true, IEnumerable<HistoricalInstrumentAcquisition>? rows = null) =>
         new(new ReplayJob("job", Day, false, "fingerprint", state, "message", "TradingDay", null, [], [], 1, 1, canReplay, "mode",
                 DateTimeOffset.UnixEpoch, PreparationComplete: preparationComplete),
-            acquiring, 1, priceOnly, null, true, false, null, null, null, 0, false, null, [], [], [], null, null, null, false, null, [],
+            acquiring ? ReplayJobPhase.Acquiring : ReplayJobPhase.Idle, false, 1, priceOnly, null, true, false, null, null, null, 0, false, null, [], [], [], null, null, null, false, null, [],
             new AcquisitionAttemptEvidence(1, Day, rows), qualification);
 
     [Theory]

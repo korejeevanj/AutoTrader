@@ -145,7 +145,7 @@ public sealed class ReplayRunLifecycle(string jobId, DateOnly date, ReplayEviden
     {
         if (!openingStaged || ManifestPending || JournalRunId is not { } id) return;
         try { journal.AcknowledgeRunOpening(jobId, id); openingStaged = false; }
-        catch (Exception error) when (error is IOException or System.Data.Common.DbException)
+        catch (Exception error) when (StorageFailure.Is(error))
         { /* Manifest and host checkpoint are durable. Retain the safe stage and retry cleanup on a later checkpoint. */ }
     }
 

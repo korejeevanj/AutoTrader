@@ -6,7 +6,7 @@ namespace Trading.Replay;
 public sealed partial class ReplayJobs
 {
     /// <summary>Records the acquisition module's progress on the job; the module owns what is acquired.</summary>
-    private sealed class AcquisitionProgress(ReplayJobs host, RuntimeJob runtime) : IAcquisitionObserver
+    private sealed class AcquisitionProgress(ReplayJobs host, ReplayJobRuntime runtime) : IAcquisitionObserver
     {
         private int attempt;
 
@@ -86,7 +86,7 @@ public sealed partial class ReplayJobs
     }
 
     /// <summary>Records an acquisition that stopped before producing frozen, downloaded inputs.</summary>
-    private Task Conclude(RuntimeJob runtime, AcquisitionOutcome outcome) => outcome switch
+    private Task Conclude(ReplayJobRuntime runtime, AcquisitionOutcome outcome) => outcome switch
     {
         AcquisitionOutcome.MarketClosed closed => Change(runtime, job => job with { State = ReplayJobState.MarketClosed, CalendarStatus = closed.Session.Status,
             Message = closed.Session.Message, CanReplay = false }),
