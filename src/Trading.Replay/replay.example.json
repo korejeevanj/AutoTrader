@@ -1,0 +1,53 @@
+{
+  "Version": "candle-replay-v1",
+  "RunId": "banknifty-historical",
+  "EngineProfile": "../Trading.Engine/engine.paper.example.json",
+  "PublicationLag": "00:00:00",
+  "EnableCandleResearch": true,
+  "MaximumWeightSnapshotAgeDays": 45,
+  "DirectionalResearch": {
+    "Version": "directional-labels-v1",
+    "HorizonMinutes": 5,
+    "BarrierPercent": 0.05,
+    "FlatThresholdPercent": 0.01
+  },
+  "FromDate": null,
+  "ToDate": null,
+  "Presets": [
+    {
+      "Id": "base",
+      "FullSpreadTicks": 20,
+      "AdverseSlippageTicks": 2,
+      "GapStressRupees": 50,
+      "ExecutionDelay": "00:00:00",
+      "PendingEntryTimeout": "00:02:00"
+    },
+    {
+      "Id": "adverse",
+      "FullSpreadTicks": 40,
+      "AdverseSlippageTicks": 10,
+      "GapStressRupees": 50,
+      "ExecutionDelay": "00:00:00",
+      "PendingEntryTimeout": "00:02:00"
+    }
+  ],
+  "FeeSchedules": [
+    {
+      "ProfileId": "paper-fees",
+      "Version": "zerodha-reference-options-2026-04-paper-v1",
+      "Source": "Estimated paper reference: zerodha.com/charges/; nsearchives.nseindia.com/content/circulars/FATAX73524.pdf (STT from 2026-04-01). Combined exchange/IPFT 0.03553%; not exact contract-note reconciliation.",
+      "IsIllustrative": false,
+      "EvidenceClass": "SOURCED_PAPER_COST_ASSUMPTIONS",
+      "RoundStatutoryChargesToRupee": true,
+      "AvailableAtUtc": "2026-04-01T00:00:00Z",
+      "EffectiveFromUtc": "2026-04-01T00:00:00Z",
+      "EffectiveToUtc": null,
+      "BrokeragePerOrder": 20,
+      "ExchangeTurnoverRate": 0.0003553,
+      "RegulatoryTurnoverRate": 0.000001,
+      "SellTransactionTaxRate": 0.0015,
+      "BuyStampDutyRate": 0.00003,
+      "GstRate": 0.18
+    }
+  ]
+}

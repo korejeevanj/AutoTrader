@@ -1,0 +1,79 @@
+{
+  "Version": "kite-minute-dataset-v1",
+  "DatasetId": "banknifty-2026-10-09",
+  "Provider": "KITE",
+  "IsSynthetic": false,
+  "DownloadedAtUtc": null,
+  "UniverseVersion": "fixed-55000-october-v1",
+  "UniverseAvailableAtUtc": "2026-10-08T18:30:00Z",
+  "IncludesAllOptions": false,
+  "CalendarVerified": false,
+  "CalendarSource": null,
+  "CalendarPublicationEvidence": null,
+  "MarketOpen": "09:15:00",
+  "MarketClose": "15:30:00",
+  "TradingDates": ["2026-10-09"],
+  "Indices": [
+    {
+      "Id": "BANKNIFTY",
+      "DisplayName": "Bank Nifty",
+      "Exchange": "NSE",
+      "TimeZone": "Asia/Kolkata",
+      "ConstituentLabel": "Banks",
+      "DefinitionVersion": "historical-identity-v1",
+      "EffectiveFromUtc": "2026-10-01T00:00:00Z",
+      "EffectiveToUtc": null,
+      "IsSynthetic": false,
+      "Capabilities": { "FuturesChart": true, "OptionComparison": true, "WeightedConstituents": true }
+    }
+  ],
+  "Instruments": [
+    {
+      "Id": "BANKNIFTY-INDEX", "IndexId": "BANKNIFTY", "InstrumentToken": 260105,
+      "Role": "CashIndex", "File": "banknifty-index.json", "Exchange": "NSE",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z", "Verified": false
+    },
+    {
+      "Id": "HDFCBANK", "IndexId": "BANKNIFTY", "InstrumentToken": 341249,
+      "Role": "Constituent", "File": "hdfc-bank.json", "Exchange": "NSE",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z", "Verified": false
+    },
+    {
+      "Id": "ICICIBANK", "IndexId": "BANKNIFTY", "InstrumentToken": 1270529,
+      "Role": "Constituent", "File": "icici-bank.json", "Exchange": "NSE",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z", "Verified": false
+    },
+    {
+      "Id": "BANKNIFTY-OCT-FUT", "IndexId": "BANKNIFTY", "InstrumentToken": 12466946,
+      "Role": "Futures", "File": "banknifty-oct-futures.json", "Exchange": "NFO",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z", "Verified": false
+    },
+    {
+      "Id": "BANKNIFTY-OCT-55000-CE", "IndexId": "BANKNIFTY", "InstrumentToken": 12656898,
+      "Role": "Call", "File": "banknifty-oct-55000-ce.json", "Exchange": "NFO",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z",
+      "Expiry": null, "Strike": 55000, "LotSize": null, "TickSize": null, "Verified": false
+    },
+    {
+      "Id": "BANKNIFTY-OCT-55000-PE", "IndexId": "BANKNIFTY", "InstrumentToken": 12657154,
+      "Role": "Put", "File": "banknifty-oct-55000-pe.json", "Exchange": "NFO",
+      "DefinitionVersion": "UNVERIFIED", "AvailableAtUtc": "2026-10-01T00:00:00Z",
+      "ValidFromUtc": "2026-10-01T00:00:00Z", "ValidToUtc": "2026-11-01T00:00:00Z",
+      "Expiry": null, "Strike": 55000, "LotSize": null, "TickSize": null, "Verified": false
+    }
+  ],
+  "Weights": [
+    {
+      "IndexId": "BANKNIFTY", "Version": "UNVERIFIED", "Source": "",
+      "EffectiveFromUtc": "2026-10-01T00:00:00Z", "EffectiveToUtc": null,
+      "AvailableAtUtc": "2026-10-01T00:00:00Z", "Verified": false,
+      "SnapshotDate": null, "WeightConvention": "Dated", "PublicationEvidence": null,
+      "Members": [{ "InstrumentId": "HDFCBANK", "WeightPercent": null }, { "InstrumentId": "ICICIBANK", "WeightPercent": null }]
+    }
+  ]
+}

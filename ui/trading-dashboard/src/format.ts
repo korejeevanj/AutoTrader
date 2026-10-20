@@ -1,0 +1,11 @@
+const numberFormat = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const integerFormat = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 });
+const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+export const num = (value: number | null): string => value === null ? 'Unavailable' : numberFormat.format(value);
+export const count = (value: number | null): string => value === null ? 'Unavailable' : integerFormat.format(value);
+export const percent = (value: number | null): string => value === null ? 'Unavailable' : `${numberFormat.format(value)}%`;
+export const money = (value: number | null): string => value === null ? 'Unavailable' : `₹${numberFormat.format(value)}`;
+export const age = (value: number | null): string => value === null ? 'Unavailable' : `${numberFormat.format(value)}s`;
+export const ist = (value: string | null): string => value === null ? 'Unavailable' : `${dateFormat.format(new Date(value))} IST`;
+export const chartTime = (seconds: number): string => timeFormat.format(new Date(seconds * 1000));

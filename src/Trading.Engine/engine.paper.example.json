@@ -1,0 +1,75 @@
+{
+  "Version": "paper-policy-v1",
+  "Strategies": [
+    {
+      "IndexId": "BANKNIFTY",
+      "Enabled": true,
+      "Kind": "FuturesOpeningRangeVwap",
+      "Confirmation": "WeightedConstituentVwap",
+      "OpeningStart": "09:15:00",
+      "OpeningEnd": "09:30:00",
+      "EntryStart": "09:30:00",
+      "EntryEnd": "11:30:00",
+      "SessionExit": "15:15:00",
+      "BarInterval": "00:01:00",
+      "SetupLifetime": "00:01:00",
+      "ConfirmationWeightPercent": 65,
+      "BreadthPolicyVersion": "constituent-count-v1",
+      "MinimumConfirmingConstituents": null,
+      "WeightTotalTolerancePercent": 0,
+      "Lots": 1,
+      "MaximumCandidates": 35,
+      "ExcludeExpiryDay": true,
+      "Evidence": {
+        "MaximumObservationAge": "00:00:02",
+        "MaximumReceiptAge": "00:00:02",
+        "MaximumQuoteSkew": "00:00:01",
+        "MaximumSpreadPercent": 1,
+        "MinimumDepthLots": 1
+      },
+      "Risk": {
+        "GrossCashStop": 200,
+        "NetCashStop": null,
+        "MaximumNetRisk": 400,
+        "MinimumScenarioNetProfit": 500,
+        "StructuralLookbackBars": 14,
+        "StructuralBufferMultiplier": 0.10,
+        "FeeProfileId": "paper-fees"
+      },
+      "Position": {
+        "SoftThesisPolicyVersion": "soft-confirmation-v1",
+        "MaximumSoftWeakeningDuration": "00:02:00",
+        "ThesisFailureCloses": 2,
+        "TimeExitAfter": "00:20:00",
+        "RequiredProgressR": 0.5,
+        "ProfitMilestone": 500,
+        "ProfitExit": {
+          "Version": "profit-exit-v1",
+          "Mode": "Disabled",
+          "NetTarget": 500,
+          "TrailActivation": 500,
+          "TrailGiveback": 200,
+          "MinimumLockedNetProfit": 300
+        }
+      },
+      "Ranking": ["SpreadPercentage", "RoundTripFriction", "StrikeDistance", "ObservedDepth"]
+    }
+  ],
+  "Portfolio": {
+    "MaximumActiveOrPendingEntries": 1,
+    "MaximumActiveOrPendingEntriesPerIndex": 1,
+    "MaximumStrategyAttempts": 3,
+    "MaximumStrategyAttemptsPerIndex": 3,
+    "MaximumManualAttempts": 1,
+    "NetSessionPauseLoss": 1200,
+    "IndexPriority": ["BANKNIFTY"]
+  },
+  "PaperSimulation": {
+    "Version": "paper-fill-v1",
+    "InitialCapital": 500000,
+    "ExecutionDelay": "00:00:00.2500000",
+    "PendingEntryTimeout": "00:00:05",
+    "EntryAdverseSlippage": 0,
+    "ExitAdverseSlippage": 0
+  }
+}

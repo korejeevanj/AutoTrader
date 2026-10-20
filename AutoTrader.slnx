@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Trading.Domain/Trading.Domain.csproj" />
+    <Project Path="src/Trading.Analytics/Trading.Analytics.csproj" />
+    <Project Path="src/Trading.Risk/Trading.Risk.csproj" />
+    <Project Path="src/Trading.Engine/Trading.Engine.csproj" />
+    <Project Path="src/Trading.Data/Trading.Data.csproj" />
+    <Project Path="src/Trading.Replay/Trading.Replay.csproj" />
+    <Project Path="src/Trading.Replay.Cli/Trading.Replay.Cli.csproj" />
+    <Project Path="src/Trading.Recorder/Trading.Recorder.csproj" />
+    <Project Path="src/Trading.Portfolio/Trading.Portfolio.csproj" />
+    <Project Path="src/Trading.Api/Trading.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Trading.Tests/Trading.Tests.csproj" />
+  </Folder>
+</Solution>

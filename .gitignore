@@ -1,0 +1,37 @@
+# Build output and developer-local state
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+.vs/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+**/TestResults/
+**/test-results/
+**/playwright-report/
+**/coverage/
+
+# Local secrets and overrides; examples are safe to track
+.env
+.env.*
+!.env.example
+**/appsettings.Local.json
+/src/Trading.Api/kite.credentials.Local.json
+config/*.local.json
+*.pfx
+*.pem
+*.key
+
+# Private market data and generated runs: retain folder documentation
+/data/**
+!/data/**/
+!/data/**/README.md
+/runs/**
+!/runs/**/
+!/runs/**/README.md
