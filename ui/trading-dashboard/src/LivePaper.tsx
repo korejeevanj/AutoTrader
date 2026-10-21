@@ -61,6 +61,7 @@ export function LivePaper() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [replaySource, setReplaySource] = useState('');
   const [changedConfiguration, setChangedConfiguration] = useState('');
+  const [assumeAutoArmed, setAssumeAutoArmed] = useState(false);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
   useEffect(() => {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
@@ -89,7 +90,7 @@ export function LivePaper() {
   }
   async function runReplay() {
     setBusy(true); setCommandError(''); setReplay(null);
-    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null })); }
+    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null, assumeAutoArmed })); }
     catch (reason) { setCommandError(reason instanceof Error ? reason.message : 'Quote replay failed'); }
     finally { setBusy(false); }
   }
@@ -117,6 +118,7 @@ export function LivePaper() {
         {view.recordingIncomplete && <p className="error">Recording contains a gap or possible crash-tail loss. Replay must retain this limitation.</p>}
         <p className="helper">{view.issues.join(' · ') || 'No reference/recovery issues reported.'}</p>
         <div className="toolbar"><button disabled={busy || view.status === 'Preparing' || view.status === 'Connected' || view.status === 'Reconnecting'} onClick={() => void command('start')}>Start / reconnect recording</button>
+          <button disabled={busy || view.status === 'Stopped' || view.status === 'Stopping' || !!view.paper?.position} onClick={() => void command('stop')}>Stop recording</button>
           <button disabled={busy || !view.runId || view.autoEnabled} onClick={() => void command('arm')}>Enable paper-auto</button>
           <button disabled={busy || !view.runId} onClick={() => void command('pause')}>Pause paper-auto</button>
           <button disabled={busy || !view.paper?.position && !view.paper?.pending} onClick={() => void command('exit')}>Request paper exit</button></div>
@@ -148,6 +150,7 @@ export function LivePaper() {
       <div className="toolbar"><button disabled={busy} onClick={() => void loadRecordings()}>Load recordings</button><label>Source recording <select aria-label="Source recording" value={replaySource} onChange={event => setReplaySource(event.target.value)}><option value="">Select session</option>{recordings.map(item => <option key={item.id} value={item.id}>{item.id} · {item.lastSequence} events</option>)}</select></label></div>
       <label>Changed engine configuration JSON (optional)<textarea value={changedConfiguration} onChange={event => setChangedConfiguration(event.target.value)} rows={5} placeholder="Leave empty to use the frozen original configuration" /></label>
       <button disabled={busy || !recordings.find(item => item.id === replaySource)?.engineJson} onClick={() => setChangedConfiguration(recordings.find(item => item.id === replaySource)?.engineJson ?? '')}>Load frozen settings for editing</button>
+      <label><input type="checkbox" checked={assumeAutoArmed} disabled={busy} onChange={event => setAssumeAutoArmed(event.target.checked)} /> What-if: assume paper-auto armed and recorder healthy</label><p className="helper">Counterfactual test of settings on recorded quotes. Ignores the original arm state and recorder gaps; feed disconnects and stale quotes still block entry. The result is labeled WHAT_IF.</p>
       <button disabled={busy || !replaySource} onClick={() => void runReplay()}>Replay recorded quotes</button>
       {replay && <><h3>{replay.mode}</h3><p>Result {replay.id} · Source {replay.sourceRunId}</p><p>{replay.limitations.join(' · ')}</p>
         {!!replay.result.candidates?.length && <details><summary>Replayed candidate decisions</summary>{replay.result.candidates.map(candidate => <p key={candidate.contractId}>{candidate.contractId} · {enumLabel(candidate.action, ['ENTER', 'WATCH', 'SKIP', 'INSUFFICIENT_DATA'])} · {candidate.reasonCodes.join(' · ')}</p>)}</details>}

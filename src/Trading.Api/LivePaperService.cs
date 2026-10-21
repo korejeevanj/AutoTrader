@@ -32,7 +32,7 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     long MarketRecordingBytes, long FreeDiskBytes, double RecordedMessagesPerSecond, string? ArchiveError);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
-public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null);
+public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false);
 public sealed record QuoteReplayResult(string Id, string SourceRunId, string Mode, string SourceCodeVersion,
     string ReplayCodeVersion, string ConfigurationHash, QuoteSessionCheckpoint Result, IReadOnlyList<string> Limitations);
 
@@ -59,6 +59,7 @@ public sealed class LivePaperService : BackgroundService
     private Task lastCommit = Task.CompletedTask;
     private DateOnly? heldMappingDate;
     private Task? feed;
+    private CancellationTokenSource? feedLifetime;
     private long sequence;
     private string connectionId = "host";
     private string status = "Stopped";
@@ -151,8 +152,46 @@ public sealed class LivePaperService : BackgroundService
         { lock (gate) archiveError = "MARKET_ARCHIVE_FAILED"; }
     });
 
+    // Operator stop: ends the feed, drains both writers and closes the run, so the next start begins a fresh run.
+    private async Task StopRecordingAsync(CancellationToken token)
+    {
+        Task? running;
+        lock (gate)
+        {
+            if (status is "StorageFault" or "RollingOver" or "Stopping") throw new InvalidOperationException("STOP_UNAVAILABLE_IN_CURRENT_STATE");
+            if (session?.Paper.Position is not null) throw new InvalidOperationException("OPEN_PAPER_POSITION_BLOCKS_STOP");
+            status = "Stopping"; running = feed; feedLifetime?.Cancel();
+        }
+        if (running is not null)
+            try { await running.WaitAsync(TimeSpan.FromSeconds(10), token); }
+            catch (TimeoutException)
+            {
+                lock (gate) { status = "Blocked"; errorCode = "STOP_INCOMPLETE_FEED_STILL_RUNNING"; }
+                throw new InvalidOperationException("STOP_INCOMPLETE_FEED_STILL_RUNNING");
+            }
+        BufferedQuoteRecorder? oldRecorder; BufferedPaperCheckpoints? oldPaperWriter;
+        lock (gate)
+        {
+            oldRecorder = recorder; oldPaperWriter = paperWriter;
+            if (session is null || oldRecorder is null || oldPaperWriter is null) { status = "Stopped"; errorCode = null; return; }
+            PublishLocked("Control", JsonSerializer.SerializeToUtf8Bytes(new QuoteControl("pause", "operator-stop"), QuoteTradingSession.Json));
+        }
+        await oldRecorder.DisposeAsync();
+        await oldPaperWriter.DisposeAsync();
+        lock (gate)
+        {
+            if (oldRecorder.Failure is not null || oldRecorder.DurableSequence != sequence || oldPaperWriter.Failure is not null || !lastCommit.IsCompletedSuccessfully)
+            { status = "StorageFault"; errorCode = "STOP_INCOMPLETE_DRAIN"; session!.Degrade(errorCode); throw new InvalidOperationException(errorCode); }
+            var checkpoint = JsonSerializer.Serialize(session!.Checkpoint(), QuoteTradingSession.Json);
+            paperStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
+            marketStore.Checkpoint(session.Manifest.Id, sequence, checkpoint, true);
+            session = null; recorder = null; paperWriter = null; acknowledged = null; status = "Stopped"; errorCode = null;
+        }
+    }
+
     public async Task CommandAsync(QuoteControl command, CancellationToken token = default)
     {
+        if (command.Command == "stop") { await StopRecordingAsync(token); return; }
         Task commit;
         lock (gate)
         {
@@ -161,7 +200,9 @@ public sealed class LivePaperService : BackgroundService
                 if (feed is { IsCompleted: false }) return;
                 if (status == "StorageFault") throw new InvalidOperationException("RESTART_REQUIRED_AFTER_STORAGE_FAILURE");
                 status = "Preparing"; errorCode = null;
-                feed = Task.Run(() => RunFeedAsync(stopping)); return;
+                feedLifetime?.Dispose(); feedLifetime = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+                var lifetime = feedLifetime.Token;
+                feed = Task.Run(() => RunFeedAsync(lifetime)); return;
             }
             if (session is null || recorder is null) throw new InvalidOperationException("LIVE_SESSION_NOT_STARTED");
             PublishLocked("Control", JsonSerializer.SerializeToUtf8Bytes(command, QuoteTradingSession.Json));
@@ -205,7 +246,7 @@ public sealed class LivePaperService : BackgroundService
                 lock (gate)
                 {
                     ArchiveWhenIdle(clock.GetUtcNow());
-                    if (session is not null && recorder is not null && status is not ("StorageFault" or "RollingOver"))
+                    if (session is not null && recorder is not null && status is not ("StorageFault" or "RollingOver" or "Stopping"))
                     {
                         if (NeedsNewReferences()) connectionLifetime?.Cancel();
                         PublishLocked("Health", JsonSerializer.SerializeToUtf8Bytes(new QuoteRecorderHealth(recorder.Healthy, recorder.DurableSequence), QuoteTradingSession.Json));
@@ -395,6 +436,7 @@ public sealed class LivePaperService : BackgroundService
         catch (Exception error) when (error is KiteDataException or InvalidDataException or IOException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException
             or JsonException or FormatException or ArgumentException or OverflowException)
         {
+            Console.Error.WriteLine($"[live] feed blocked: {error}");
             lock (gate) { status = status == "StorageFault" ? status : "Blocked"; errorCode = error is KiteDataException provider ? provider.Code
                 : error.Message == "UNRESOLVED_PRIOR_SESSION_POSITION" ? error.Message : "LIVE_PREPARATION_OR_STORAGE_FAILED"; session?.Degrade(errorCode); }
         }
@@ -429,7 +471,8 @@ public sealed class LivePaperService : BackgroundService
             manifest = manifest with { EngineJson = changed.ToJson() };
         }
         var runner = new QuoteTradingSession(manifest, executingCodeVersion: CodeVersion, mode: EngineDataMode.PAPER_REPLAY,
-            applyRecoveryBoundaries: request.EngineJson is null || manifest.EngineJson == JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!.EngineJson);
+            applyRecoveryBoundaries: request.EngineJson is null || manifest.EngineJson == JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!.EngineJson,
+            assumeArmed: request.AssumeAutoArmed);
         var sourceManifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var sourceSession = new QuoteTradingSession(sourceManifest);
         var sourceStore = markets.StoreOf(source.Id);
@@ -451,7 +494,8 @@ public sealed class LivePaperService : BackgroundService
                 .. (originalCode == CodeVersion ? Array.Empty<string>() : new[] { "SOURCE_CODE_DIFFERS_REPLAY_USES_CURRENT_BUILD" }),
                 .. (!source.Closed ? new[] { "RECORDING_STILL_OPEN_REPLAY_USES_COMMITTED_PREFIX" } : Array.Empty<string>()),
                 .. (request.EngineJson is not null ? new[] { "COUNTERFACTUAL_PAPER_DURABILITY_TIMING_NOT_OBSERVED" } : Array.Empty<string>()),
-                .. (runner.RecordingIncomplete ? new[] { "SOURCE_RECORDING_HAS_GAPS_OR_RECOVERY" } : Array.Empty<string>())]);
+                .. (runner.RecordingIncomplete || runner.OverriddenRecordingGaps ? new[] { "SOURCE_RECORDING_HAS_GAPS_OR_RECOVERY" } : Array.Empty<string>()),
+                .. (request.AssumeAutoArmed ? new[] { "WHAT_IF_AUTO_ARMED_FROM_START", "WHAT_IF_RECORDER_HEALTH_IGNORED" } : Array.Empty<string>())]);
         var json = JsonSerializer.Serialize(result, QuoteTradingSession.Json);
         replayStore.Create(result.Id, clock.GetUtcNow(), JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
         replayStore.Checkpoint(result.Id, runner.LastSequence, json, true);
@@ -526,8 +570,8 @@ public static class LivePaperRoutes
             catch (Exception error) when (error is InvalidOperationException or KiteDataException or ArgumentException)
             { return Results.Problem(statusCode: 409, title: "Paper command blocked", detail: error.Message); }
         }).WithName("LivePaperCommand").Produces<LivePaperView>().ProducesProblem(409).ProducesProblem(400).ProducesProblem(415).ProducesProblem(500).ProducesProblem(503)
-            .WithSummary("Start recording, pause/arm auto, manual-test entry or request local paper exit.")
-            .WithDescription("Commands: start, pause, arm, manual, exit. Stable requestId and server-resolved frozen-universe contractId make manual requests idempotent. No real order transport.");
+            .WithSummary("Start or stop recording, pause/arm auto, manual-test entry or request local paper exit.")
+            .WithDescription("Commands: start, stop, pause, arm, manual, exit. Stop is refused while a paper position is open; it closes the run so start begins a new one. Stable requestId and server-resolved frozen-universe contractId make manual requests idempotent. No real order transport.");
         group.MapGet("/recordings", (LivePaperService service) => service.Runs()).WithName("LiveRecordings")
             .WithSummary("List local recorded quote sessions.").WithDescription("Run IDs select server-managed immutable source evidence, never client filesystem paths.").ProducesProblem(500);
         group.MapGet("/recordings/{id}/decisions", (string id, long? after, int? limit, LivePaperService service) =>

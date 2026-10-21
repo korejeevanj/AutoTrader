@@ -33,6 +33,7 @@ public sealed class QuoteTradingSession
     private readonly TradingDecisionEngine engine;
     private readonly EngineDataMode mode;
     private readonly bool applyRecoveryBoundaries;
+    private readonly bool assumeArmed;
     private readonly EngineConfiguration settings;
     private readonly IndexStrategyConfiguration profile;
     private readonly EngineSession session;
@@ -46,6 +47,7 @@ public sealed class QuoteTradingSession
     private List<string> universe = [];
     private readonly Dictionary<string, OptionScenarioAssessment> acceptedModels = [];
     private bool recovering;
+    private DateTimeOffset? lastPacketAtUtc;
     private string? featureSignature;
     private FuturesFeatureEvidence[] cachedFeatures = [];
     private ConstituentBarEvidence[] cachedConstituents = [];
@@ -63,6 +65,8 @@ public sealed class QuoteTradingSession
     public long CommittedThrough { get; private set; }
     public bool LossPaused { get; private set; }
     public bool RecordingIncomplete { get; private set; }
+    // Counterfactual replay only: the source recording showed recorder gaps or health loss that the what-if overrode.
+    public bool OverriddenRecordingGaps { get; private set; }
     public DateTimeOffset? UnhealthySince { get; private set; }
     public IReadOnlyList<CandidateAssessment> Candidates { get; private set; } = [];
     public PositionDecision? LastPositionDecision { get; private set; }
@@ -76,8 +80,9 @@ public sealed class QuoteTradingSession
     public HistoricalInstrument Future { get; }
 
     public QuoteTradingSession(QuoteRunManifest manifest, QuoteSessionCheckpoint? recovered = null, string? executingCodeVersion = null,
-        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true)
+        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true, bool assumeArmed = false)
     {
+        this.assumeArmed = assumeArmed;
         Manifest = manifest; settings = EngineConfiguration.FromJson(manifest.EngineJson);
         ExecutingCodeVersion = executingCodeVersion ?? manifest.CodeVersion;
         this.mode = manifest.Index.IsSynthetic ? EngineDataMode.SYNTHETIC_TEST : mode ?? EngineDataMode.PAPER_LIVE_DATA;
@@ -94,7 +99,7 @@ public sealed class QuoteTradingSession
             throw new ArgumentException("Quote-paper slippage must remain one actual contract tick; incompatible overrides are not supported.");
         Future = manifest.Instruments.Single(item => item.Role == HistoricalInstrumentRole.Futures);
         foreach (var item in manifest.Instruments.Where(item => item.Role is HistoricalInstrumentRole.Futures or HistoricalInstrumentRole.Constituent))
-            bars[item.Id] = new(item.Id, session.At(profile.OpeningStart));
+            bars[item.Id] = new(item.Id, session.At(profile.OpeningStart), profile.Evidence.MaximumReceiptAge);
         broker = CreateBroker();
         if (recovered is null) return;
         LastSequence = recovered.LastSequence; CurrentTimeUtc = recovered.CurrentTimeUtc;
@@ -147,14 +152,20 @@ public sealed class QuoteTradingSession
         {
             RecorderHealthy = admission.RecordingHealthy && admission.PaperHealthy;
             CommittedThrough = admission.MarketCommittedThrough; paperCommittedThrough = admission.PaperCommittedThrough;
-            if (!RecorderHealthy) Degrade(admission.PaperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS");
+            if (!RecorderHealthy)
+            {
+                var issue = admission.PaperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS";
+                // A what-if keeps the received market data: a recorder blip says the recording is incomplete, not that quotes were lost.
+                if (assumeArmed) Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray(); else Degrade(issue);
+            }
         }
+        AssumeArmed();
         switch (item.Kind)
         {
             case "Connected": FeedConnected = true; break;
             case "Disconnected":
                 FeedConnected = false; AutoEnabled = false; RecordingIncomplete = true;
-                foreach (var builder in bars.Values) builder.Gap();
+                foreach (var builder in bars.Values) builder.GapAt(now);
                 break;
             case "Health":
                 var health = JsonSerializer.Deserialize<QuoteRecorderHealth>(item.Payload, Json)!;
@@ -163,6 +174,13 @@ public sealed class QuoteTradingSession
                 if (!RecorderHealthy) { RecordingIncomplete = true; AutoEnabled = false; }
                 break;
             case "Binary":
+                if (lastPacketAtUtc is { } previousPacket && now - previousPacket > profile.Evidence.MaximumFeedSilence
+                    && previousPacket >= session.At(profile.OpeningStart) && now <= session.At(profile.SessionExit))
+                {
+                    foreach (var builder in bars.Values) builder.Gap();
+                    Issues = Issues.Append("FEED_SILENCE").Distinct(StringComparer.Ordinal).ToArray();
+                }
+                lastPacketAtUtc = now;
                 try
                 {
                     foreach (var decoded in KiteStreamingDecoder.Decode(item.Payload, item.ReceivedAtUtc, item.Sequence))
@@ -195,6 +213,7 @@ public sealed class QuoteTradingSession
                 else if (item.Payload.Length == 0) Issues = Issues.Append("RECOVERY_BOUNDARY_MISSING").Distinct().ToArray();
                 Degrade("RECOVERED_PAUSED_POSSIBLE_RECORDING_TAIL_LOSS"); FeedConnected = false; break;
         }
+        AssumeArmed();
         foreach (var builder in bars.Values) builder.Advance(now);
         var heldQuoteHealthy = Paper.Position is not { } held || latest.TryGetValue(held.Approval.Contract.InstrumentToken, out var heldTick)
             && broker.Fresh(heldTick, now) && heldTick.Bids.FirstOrDefault()?.Price > 0;
@@ -211,10 +230,20 @@ public sealed class QuoteTradingSession
         if (!ReferenceEquals(beforePaper, Paper)) lastPaperEffectSequence = LastSequence;
     }
 
+    // What-if only: treat the recorder as healthy and paper-auto as armed, so recorded quotes can be tested against
+    // changed settings. Feed disconnects, stale quotes and the session loss pause still apply.
+    private void AssumeArmed()
+    {
+        if (!assumeArmed) return;
+        if (RecordingIncomplete || !RecorderHealthy) OverriddenRecordingGaps = true;
+        RecorderHealthy = true; RecordingIncomplete = false; AutoEnabled = !LossPaused;
+        CommittedThrough = LastSequence; paperCommittedThrough = long.MaxValue;
+    }
+
     public void Degrade(string issue)
     {
         AutoEnabled = false; RecorderHealthy = false; RecordingIncomplete = true;
-        foreach (var builder in bars.Values) builder.Gap();
+        if (CurrentTimeUtc is { } at) foreach (var builder in bars.Values) builder.GapAt(at);
         Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray();
     }
 

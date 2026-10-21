@@ -171,6 +171,145 @@ public sealed class QuoteSessionTests
     }
 
     [Fact]
+    public void A_quiet_constituent_keeps_bar_coverage_while_the_feed_stays_alive()
+    {
+        var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+        session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
+        for (var second = 1; second <= 120; second++)
+        {
+            var now = Open.AddSeconds(second);
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second)));
+            if (second is 1 or 40 or 100) session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(513, now, 100, second)));
+        }
+        var bars = session.Checkpoint().Bars;
+        Assert.True(bars["bank"].CompleteCoverage); Assert.True(bars["future"].CompleteCoverage);
+        Assert.DoesNotContain("FEED_SILENCE", session.Issues);
+    }
+
+    [Fact]
+    public void Feed_wide_silence_in_session_hours_voids_bar_coverage_for_every_instrument()
+    {
+        var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+        session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
+        foreach (var second in new[] { 1, 2, 3, 4, 12, 13 })
+        {
+            var now = Open.AddSeconds(second);
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second)));
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(513, now, 100, second)));
+        }
+        var bars = session.Checkpoint().Bars;
+        Assert.False(bars["bank"].CompleteCoverage); Assert.False(bars["future"].CompleteCoverage);
+        Assert.Contains("FEED_SILENCE", session.Issues);
+    }
+
+    [Fact]
+    public void Silence_before_the_session_opens_does_not_void_bar_coverage()
+    {
+        var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+        var early = Open.AddMinutes(-30);
+        session.Apply(new("fixture", ++sequence, early, "test", "Binary", Packet(258, early, 100, 1)));
+        session.Apply(new("fixture", ++sequence, Open.AddSeconds(1), "test", "Binary", Packet(258, Open.AddSeconds(1), 100, 2)));
+        Assert.True(session.Checkpoint().Bars["future"].CompleteCoverage);
+        Assert.DoesNotContain("FEED_SILENCE", session.Issues);
+    }
+
+    [Fact]
+    public void An_unhealthy_recorder_admission_voids_bar_coverage_in_the_original_replay_but_not_in_a_what_if()
+    {
+        QuoteTradingSession Run(bool assumeArmed)
+        {
+            var session = new QuoteTradingSession(Manifest(), assumeArmed: assumeArmed); var sequence = 0L;
+            session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
+            for (var second = 1; second <= 3; second++)
+            {
+                var now = Open.AddSeconds(second);
+                var admission = new MarketAdmission(now, second != 2, sequence, true, sequence);
+                session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second), admission));
+            }
+            return session;
+        }
+
+        Assert.False(Run(false).Checkpoint().Bars["future"].CompleteCoverage);
+        var whatIf = Run(true);
+        Assert.True(whatIf.Checkpoint().Bars["future"].CompleteCoverage);
+        Assert.Contains("RECORDER_NOT_HEALTHY_AT_INGRESS", whatIf.Issues);
+    }
+
+    [Fact]
+    public void A_disconnect_before_the_session_starts_keeps_bar_coverage_but_one_during_it_voids_it()
+    {
+        QuoteTradingSession Run(DateTimeOffset disconnectAt)
+        {
+            var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+            session.Apply(new("fixture", ++sequence, Open.AddMinutes(-9), "test", "Connected", []));
+            session.Apply(new("fixture", ++sequence, disconnectAt, "test", "Disconnected", []));
+            session.Apply(new("fixture", ++sequence, disconnectAt.AddSeconds(1), "test", "Connected", []));
+            var now = disconnectAt > Open ? disconnectAt.AddSeconds(2) : Open.AddSeconds(2);
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, 1)));
+            return session;
+        }
+
+        Assert.True(Run(Open.AddMinutes(-8)).Checkpoint().Bars["future"].CompleteCoverage);
+        Assert.False(Run(Open.AddMinutes(1)).Checkpoint().Bars["future"].CompleteCoverage);
+    }
+
+    [Fact]
+    public void A_tick_stamped_inside_a_minute_but_received_just_after_it_ends_stays_in_that_bar_without_a_gap()
+    {
+        var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+        session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
+        for (var second = 1; second <= 59; second++)
+        {
+            var now = Open.AddSeconds(second);
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second)));
+        }
+        // Another instrument's packet moves the host clock past the boundary before the straggler arrives.
+        var boundary = Open.AddSeconds(60).AddMilliseconds(100);
+        session.Apply(new("fixture", ++sequence, boundary, "test", "Binary", Packet(513, boundary, 100, 1)));
+        // Stamped 09:15:59 by the exchange, received 400 ms into the next minute.
+        var late = Open.AddSeconds(60).AddMilliseconds(400);
+        session.Apply(new("fixture", ++sequence, late, "test", "Binary", Packet(258, Open.AddSeconds(59), 101, 60)));
+        var next = Open.AddSeconds(61);
+        session.Apply(new("fixture", ++sequence, next, "test", "Binary", Packet(258, next, 101, 61)));
+        var bars = session.Checkpoint().Bars[session.Future.Id];
+        Assert.True(bars.CompleteCoverage);
+        Assert.Equal(101m, bars.Completed.Single().Close);
+    }
+
+    [Fact]
+    public void What_if_replay_trades_the_strategy_without_a_recorded_arm_while_the_original_replay_does_not()
+    {
+        var manifest = Manifest();
+        var settings = EngineConfiguration.FromJson(manifest.EngineJson);
+        settings = settings with { Version = "synthetic-auto-integration", Strategies = [settings.Strategies[0] with
+            { Risk = settings.Strategies[0].Risk with { MaximumNetRisk = 1500m } }] };
+        QuoteTradingSession Run(bool assumeArmed)
+        {
+            var session = new QuoteTradingSession(manifest with { EngineJson = settings.ToJson() }, assumeArmed: assumeArmed);
+            // The recording never armed paper-auto, and its recorder reported unhealthy once.
+            var number = 0L;
+            foreach (var item in Lifecycle().Where(item => item.Kind != "Control")) session.Apply(item with { Sequence = ++number });
+            var sequence = session.LastSequence;
+            session.Apply(new("fixture", ++sequence, session.CurrentTimeUtc!.Value, "test", "Health", JsonSerializer.SerializeToUtf8Bytes(new QuoteRecorderHealth(false, sequence - 1), QuoteTradingSession.Json)));
+            for (var second = 1; second <= 61; second++)
+            {
+                var now = Open.AddMinutes(15).AddSeconds(second);
+                session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 121, 1000 + second)));
+                session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(513, now, 110, 1000 + second)));
+                session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(54786, now, 14.12m, 1000 + second, 14.10m, 14.15m)));
+                session.Apply(new("fixture", ++sequence, now, "test", "Health", JsonSerializer.SerializeToUtf8Bytes(new QuoteRecorderHealth(true, sequence - 1), QuoteTradingSession.Json)));
+            }
+            return session;
+        }
+
+        var original = Run(false); var whatIf = Run(true);
+
+        Assert.Empty(original.Paper.Attempts); Assert.False(original.AutoEnabled);
+        Assert.Equal("STRATEGY", whatIf.Paper.Position?.Approval.Origin);
+        Assert.True(whatIf.OverriddenRecordingGaps); Assert.False(whatIf.RecordingIncomplete);
+    }
+
+    [Fact]
     public void Processing_delay_cannot_turn_an_early_received_quote_into_a_delayed_fill()
     {
         var events = Lifecycle(); var session = new QuoteTradingSession(Manifest());
