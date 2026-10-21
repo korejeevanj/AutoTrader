@@ -7,19 +7,23 @@ public sealed record QuoteBarState(IReadOnlyList<HistoricalCandle> Completed, Hi
 
 // Candle-derived VWAP remains labelled approximate. Exchange cumulative volume is
 // differenced, never summed per quote. Finalized bars are never retroactively revised.
-public sealed class QuoteSessionBars(string instrumentId, DateTimeOffset sessionStart)
+// Silence between one instrument's own ticks is not a gap (a quiet stock simply does not trade);
+// the host calls Gap() when the feed itself is silent, disconnects or loses data.
+// A bar closes finalizationGrace after its minute ends, so a tick stamped inside the minute (exchange time has one-second
+// resolution) that arrives just after the boundary still lands in it instead of being lost to a finalized bar.
+public sealed class QuoteSessionBars(string instrumentId, DateTimeOffset sessionStart, TimeSpan finalizationGrace = default)
 {
     public QuoteBarState State { get; private set; } = new([], null, null, null, true);
     public void Restore(QuoteBarState state) => State = state;
     public void Gap() => State = State with { CompleteCoverage = false };
+    // Loss before the session starts cannot damage a session prefix that has not begun.
+    public void GapAt(DateTimeOffset at) { if (at >= sessionStart) Gap(); }
 
     public void Add(MarketTick tick)
     {
         if (tick.ExchangeTimeUtc is not { } time || time < sessionStart || tick.LastPrice <= 0 || tick.DayVolume is null) return;
         if (State.LastEventUtc > time || State.Completed.LastOrDefault()?.EndUtc > time)
         { Gap(); return; }
-        if (State.LastEventUtc is null && time > sessionStart.AddSeconds(2)) Gap();
-        if (State.LastEventUtc is { } previous && time - previous > TimeSpan.FromSeconds(2)) Gap();
         if (tick.DayVolume < State.PreviousVolume) { Gap(); return; }
         var start = new DateTimeOffset(time.UtcDateTime.AddTicks(-(time.UtcTicks % TimeSpan.TicksPerMinute)), TimeSpan.Zero);
         var available = tick.AvailableAtUtc ?? tick.ReceivedAtUtc;
@@ -34,12 +38,11 @@ public sealed class QuoteSessionBars(string instrumentId, DateTimeOffset session
 
     public void Advance(DateTimeOffset now)
     {
-        if (State.Active is { } active && now >= active.EndUtc) Complete(now);
+        if (State.Active is { } active && now >= active.EndUtc + finalizationGrace) Complete(now);
     }
     private void Complete(DateTimeOffset available)
     {
         if (State.Active is not { } bar) return;
-        if (State.LastEventUtc is null || State.LastEventUtc < bar.EndUtc.AddSeconds(-2)) Gap();
         State = State with { Active = null, Completed = [.. State.Completed, bar with { AvailableAtUtc = available < bar.EndUtc ? bar.EndUtc : available }] };
     }
 }
