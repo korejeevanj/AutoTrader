@@ -30,10 +30,13 @@ def fee(price, units, buy):
 
 
 class Params:
-    def __init__(self, vol_scale=1.0, expiry_days=14.0, spread_mult=1.0, stop=0.08, target_rupees=None, max_minutes=None):
+    def __init__(self, vol_scale=1.0, expiry_days=14.0, spread_mult=1.0, stop=0.08, target_rupees=None, max_minutes=None,
+                 stop_rupees=None, trail_activation_rupees=None, trail_giveback_rupees=None):
         self.vol_scale, self.expiry_days, self.spread_mult, self.stop = vol_scale, expiry_days, spread_mult, stop
         # Optional exits used only by diagnostics: take profit at a rupee gain per lot, or leave after a fixed number of minutes.
         self.target_rupees, self.max_minutes = target_rupees, max_minutes
+        # Rupee-based exits for diagnostics: fixed loss cut per lot, and a profit trail that starts after a gain and allows a fixed give-back.
+        self.stop_rupees, self.trail_activation_rupees, self.trail_giveback_rupees = stop_rupees, trail_activation_rupees, trail_giveback_rupees
 
 
 def quote(F, K, minutes_since_entry, vix, call, p):
@@ -73,6 +76,10 @@ def trade(day, i, direction, p):
         if bid < trough: trough = bid
         if bid <= peak * (1 - p.stop): exit_at = j + 1; reason = "STOP"; break
         if p.target_rupees is not None and (bid - ask) * UNITS >= p.target_rupees: exit_at = j + 1; reason = "TARGET"; break
+        gain = (bid - ask) * UNITS
+        if p.stop_rupees is not None and gain <= -p.stop_rupees: exit_at = j + 1; reason = "STOP"; break
+        if p.trail_activation_rupees is not None and (best_bid - ask) * UNITS >= p.trail_activation_rupees and gain <= (best_bid - ask) * UNITS - p.trail_giveback_rupees:
+            exit_at = j + 1; reason = "TRAIL"; break
         if p.max_minutes is not None and minutes >= p.max_minutes: exit_at = j + 1; reason = "TIME"; break
         if day.m[j + 1] >= 15 * 60 + 15: exit_at = j + 1; reason = "SESSION"; break
     if exit_at is None: exit_at = n - 1
