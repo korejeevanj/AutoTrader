@@ -4,7 +4,8 @@ public sealed record MarketDepthLevel(decimal Price, int Quantity, int Orders);
 public sealed record MarketTick(long InstrumentToken, decimal LastPrice, long? DayVolume,
     decimal? AveragePrice, DateTimeOffset? LastTradeTimeUtc, DateTimeOffset? ExchangeTimeUtc,
     DateTimeOffset ReceivedAtUtc, long Sequence, int PacketIndex,
-    IReadOnlyList<MarketDepthLevel> Bids, IReadOnlyList<MarketDepthLevel> Asks, DateTimeOffset? AvailableAtUtc = null);
+    IReadOnlyList<MarketDepthLevel> Bids, IReadOnlyList<MarketDepthLevel> Asks, DateTimeOffset? AvailableAtUtc = null,
+    decimal? DayHigh = null, decimal? DayLow = null);
 
 // One ingress sequence covers messages and host controls. PacketIndex preserves wire order.
 // Payload is the original complete message; normalized ticks are reproducible from it.
