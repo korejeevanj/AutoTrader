@@ -287,6 +287,23 @@ index points in the call direction.
 Nobody met the bar; the players together were no better than random, and higher confidence did not help (no strong-confidence calls were made).
 Limits: AI players, not the owner; 114 calls give a 95% band of about +/-9 points on the hit rate. Consistent with every earlier test.
 
+### Exploratory: the owner's Indian Market Forecast Ledger (outside forces), scored mechanically (1 November 2026)
+
+21 morning forecasts (29 Sep to 30 Oct 2026) written at 08:30 IST from GIFT Nifty, US and Asian markets, Brent, USD/INR, DXY, FII/DII flows,
+India VIX, options positioning and news. Scored with `scripts/research/ledger_score.py` against Kite daily candles (not the ledger's own audits).
+Including the colour markers (red bearish, green bullish, yellow neutral):
+
+| Index | Opening bias vs actual gap | Session bias vs open-to-close (the tradable part) |
+|---|---|---|
+| Nifty 50 | 16 of 21 right (76%), chance p = 0.013 | 8 of 16 (50%), -45 points per call |
+| Bank Nifty | 11 of 15 (73%) | 2 of 10 (20%), -203 points per call |
+| Sensex | 17 of 21 (81%), p = 0.004 | 8 of 14 (57%), -134 points per call |
+
+The opening calls are clearly better than chance, but GIFT Nifty already trades overnight and prices the gap, and options only open at 09:15
+with the gap already in the price, so this is not tradable by an intraday option system. The session calls (open to close) were no better than
+chance and lost points; reading only the text labels instead gives 57% / 29% / 75% on 14 / 7 / 8 calls, equally inconclusive. 21 days is far too
+few to decide; the scorer can run on every new day of the ledger.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
