@@ -106,6 +106,25 @@ Caveat fixed in advance: Bank Nifty rose about 15-fold over the sample, so any l
 beta-adjusted and compared with buy-and-hold. The index is a proxy for a futures position (no basis, no roll cost); an options implementation would be
 a separate test using the nightly option archive.
 
+### Checkpoint A2, 1 November 2026: trend-following family (run once, code `39b3007`, rules as pre-registered)
+
+5,399 daily bars, 3 Jan 2005 to 30 Oct 2026. Cost 0.05% per side. Buy-and-hold: 13.6% a year, Sharpe 0.60, maximum drawdown 68.8%.
+
+| Rule | Trades | Win rate | Avg win / avg loss | Profit factor | Net CAGR | Sharpe | Max drawdown | Alpha (per year) | t | Class |
+|---|---|---|---|---|---|---|---|---|---|---|
+| T1 55-day breakout, 3 ATR stop (L/S) | 102 | 32% | 1.85 | 0.88 | -3.6% | -0.09 | 61.8% | -1.1% | -0.26 | KILLED |
+| T2 12-month momentum, monthly (L/S) | 22 | 32% | 1.35 | 0.63 | -7.7% | -0.16 | 91.3% | -6.3% | -1.04 | KILLED |
+| T3 50/200 trend filter (long/flat) | 16 | 56% | 3.20 | 4.12 | 6.6% | 0.43 | 44.9% | -3.2% (vs exposure-matched B&H) | -0.97 | KILLED |
+
+The "lose small, win big" payoff shape is real for T1 (32% winners, winners 1.85 times the size of losers) but not large enough: 0.324 x 1.85 is below
+the 0.676 loss frequency, so expectancy is slightly negative. T3 keeps roughly half of buy-and-hold's return for about two thirds of its drawdown, which
+fails both the Sharpe test and the risk-managed test (needs at least 60% of the return with at most 60% of the drawdown). T2's alpha is worst in the
+last third of the sample. Caveats: the index stands in for a futures position (no basis or roll), and one instrument is a thin base for trend following
+(the published evidence uses many markets).
+
+With checkpoint A, six of six pre-registered tests are killed. No variant of these rules has been tried; trying one now is a new hypothesis and
+must be added above and counted in the correction (|t| required rises with every test).
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
