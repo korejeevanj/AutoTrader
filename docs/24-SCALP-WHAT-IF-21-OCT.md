@@ -69,10 +69,28 @@ First results on 21 Oct (v2 policy, auto force-armed; the diagnostics also repla
 | same, Rs 400 cash stop (net-risk limit 700) | 2 | -228.95 (-549.68 stop, +320.73 trailing profit) |
 | same, Rs 100 cash stop, quick exits | 1 | -226.31 |
 
-The two engine trades match the independent signal simulation in section 2 (put -340.76 against -341, put -370.99 against -371). The 09:32
-bullish setup never traded: at its closest, 86% of the bank weight had no usable evidence for the signal bar (`MISSING_CONSTITUENT_EVIDENCE`).
-That is a data-coverage question worth looking at on the next clean day.
+The two engine trades match the independent signal simulation in section 2 (put -340.76 against -341, put -370.99 against -371).
 
+**Constituent coverage was checked and is not the problem.** At every setup time (09:32, 10:01, 10:04, and later) all 14 banks and the futures
+had every 1-minute bar since 09:15, none with zero volume, and coverage flags intact. A first diagnostic reported 86% of bank weight
+"missing" for the 09:32 setup; that was a transient (the earliest sample after the signal bar closed, before every bank's bar had been
+finalized) and the diagnostic now reports the state at the setup's last evaluation instead. By that measure the 09:32 bullish setup was
+blocked only by `SCENARIO_NET_OPPORTUNITY` (modelled 449.91 against the 500 hurdle); the 10:01 and 10:04 setups traded.
+
+## 4. Are the data or the counts wrong? (audit of the raw ticks)
+
+- Our sampled futures bars match the exchange's own day high and low to within 1.2 points on both days (exactly on 21 Oct), at about one
+  snapshot per second. The opening range, bar volumes and bank bars are consumed correctly.
+- The market does move: swings of at least 50 points: 105 on 21 Oct and 126 on 22 Oct; at least 80 points: 29 and 45. The strategy found only
+  2-3 setups because a setup is a *fresh crossing* of the opening range (a bar closes outside the range after one closed inside) that lives
+  60 seconds; in a one-way trend it is disarmed after the first crossing.
+- Scanning simple continuation rules over both days (a 1-minute close beyond the previous 5/10/15-minute extreme, with and without a VWAP
+  filter, stops 10-40 points, targets 15-60 points, one lot at about Rs 15 per futures point, Rs 112 round-trip cost, 1 point slippage each
+  side; break-even about 9.5 points): average **gross** result per trade was between -Rs 78 and +Rs 133 for every family, so costs decide the
+  outcome; faded versions are no better; 4 of 126 parameter combinations were net positive over the two days (best +1,313 over 37 trades,
+  with 22 Oct negative), which is what chance alone would produce when picking the best of 126 on two days.
+
+## 5. What would be needed to test scalping properly
 ## 4. What would be needed to test scalping properly
 
 1. More days of clean recordings, and a signal definition that is genuinely scalp-timed (the current one is a 1-minute-bar opening-range

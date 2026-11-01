@@ -2,8 +2,10 @@ using Trading.Engine;
 
 namespace Trading.Replay;
 
+// Last* is the state when the setup was last evaluated, i.e. what actually decided it; Closest* is the best state ever seen and can be a
+// transient (for example a bar that had just closed and was not yet available everywhere).
 public sealed record SetupSeen(string SetupId, string AtIst, string Direction, int CandidateEvaluations, IReadOnlyList<string> ClosestMissReasons,
-    IReadOnlyDictionary<string, string> ClosestMissValues);
+    IReadOnlyDictionary<string, string> ClosestMissValues, IReadOnlyList<string> LastReasons, IReadOnlyDictionary<string, string> LastValues);
 public sealed record GateStats(int Samples, decimal Threshold, decimal Min, decimal Median, decimal Max);
 
 // Answers "why did the replay not trade": which setups formed, which gates rejected their candidates, by how much, and the closest miss.
@@ -14,14 +16,15 @@ public sealed class ReplayDiagnostics
     private static readonly TimeSpan Ist = TimeSpan.FromHours(5.5);
     private readonly Dictionary<string, int> reasons = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (decimal Threshold, List<decimal> Values)> gates = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, (string At, string Direction, int Count, IReadOnlyList<string> Reasons, IReadOnlyDictionary<string, string> Values)> setups = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string At, string Direction, int Count, IReadOnlyList<string> Reasons, IReadOnlyDictionary<string, string> Values,
+        IReadOnlyList<string> LastReasons, IReadOnlyDictionary<string, string> LastValues)> setups = new(StringComparer.Ordinal);
     private int evaluationsWithoutSetup, evaluationsWithSetup;
 
     public IReadOnlyDictionary<string, int> ReasonCounts => reasons.OrderByDescending(item => item.Value).ToDictionary(item => item.Key, item => item.Value);
     public int EvaluationsWithoutSetup => evaluationsWithoutSetup;
     public int EvaluationsWithSetup => evaluationsWithSetup;
     public IReadOnlyList<SetupSeen> Setups => setups.Select(item => new SetupSeen(item.Key, item.Value.At, item.Value.Direction, item.Value.Count,
-        item.Value.Reasons, item.Value.Values)).ToArray();
+        item.Value.Reasons, item.Value.Values, item.Value.LastReasons, item.Value.LastValues)).ToArray();
     public IReadOnlyDictionary<string, GateStats> GateValues => gates.Where(item => item.Value.Values.Count != 0).ToDictionary(item => item.Key, item =>
     {
         var sorted = item.Value.Values.Order().ToArray();
@@ -45,9 +48,10 @@ public sealed class ReplayDiagnostics
         var closest = active.OrderBy(candidate => candidate.ReasonCodes.Count).First();
         var known = setups.TryGetValue(closest.SetupId, out var seen);
         var better = !known || closest.ReasonCodes.Count < seen.Reasons.Count;
+        static Dictionary<string, string> Values(CandidateAssessment candidate) => candidate.Gates.Where(gate => gate.Outcome != GateOutcome.PASS && gate.Observed is not null)
+            .ToDictionary(gate => gate.Code, gate => $"{gate.Observed} vs limit {gate.Threshold}");
+        var values = Values(closest);
         setups[closest.SetupId] = (known ? seen.At : (now + Ist).ToString("HH:mm:ss"), known ? seen.Direction : closest.Direction?.ToString() ?? "?",
-            (known ? seen.Count : 0) + active.Length, better ? closest.ReasonCodes : seen.Reasons,
-            better ? closest.Gates.Where(gate => gate.Outcome != GateOutcome.PASS && gate.Observed is not null)
-                .ToDictionary(gate => gate.Code, gate => $"{gate.Observed} vs limit {gate.Threshold}") : seen.Values);
+            (known ? seen.Count : 0) + active.Length, better ? closest.ReasonCodes : seen.Reasons, better ? values : seen.Values, closest.ReasonCodes, values);
     }
 }
