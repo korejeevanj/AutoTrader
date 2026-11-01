@@ -367,7 +367,9 @@ public sealed class QuoteTradingSession
     private bool EntriesHealthy(DateTimeOffset now, bool ignoreRecorder = false) => FeedConnected && (ignoreRecorder || RecorderHealthy) && !LossPaused
         && now >= session.LocalMidnightUtc && now < session.LocalMidnightUtc.AddDays(1)
         && latest.TryGetValue(Future.InstrumentToken, out var future) && broker.Fresh(future, now)
-        && future.LastTradeTimeUtc is { } trade && trade <= now && now - trade <= profile.Evidence.MaximumObservationAge;
+        // v2: the futures quote is fresh by its exchange and receipt timestamps (broker.Fresh). A snapshot feed sends the last trade time of a
+        // slow second, which was older than the limit on about two thirds of recorded ticks; it stays visible as evidence, not a gate.
+        && (V2 || future.LastTradeTimeUtc is { } trade && trade <= now && now - trade <= profile.Evidence.MaximumObservationAge);
 
     private void SelectUniverse(MarketTick tick)
     {
@@ -415,7 +417,8 @@ public sealed class QuoteTradingSession
             tick.ExchangeTimeUtc, tick.AvailableAtUtc ?? tick.ReceivedAtUtc, KiteStreamingDecoder.Version, tick.Sequence);
     }
     private UnderlyingPriceEvidence? Underlying() => latest.TryGetValue(Future.InstrumentToken, out var tick)
-        ? new($"{tick.Sequence}:{tick.PacketIndex}", Future.Id, tick.LastPrice, tick.LastTradeTimeUtc, tick.ReceivedAtUtc, tick.AvailableAtUtc ?? tick.ReceivedAtUtc, KiteStreamingDecoder.Version) : null;
+        ? new($"{tick.Sequence}:{tick.PacketIndex}", Future.Id, tick.LastPrice, V2 ? tick.ExchangeTimeUtc : tick.LastTradeTimeUtc, tick.ReceivedAtUtc,
+            tick.AvailableAtUtc ?? tick.ReceivedAtUtc, V2 ? KiteStreamingDecoder.Version + "+exchange-timestamp-event-time" : KiteStreamingDecoder.Version) : null;
     private decimal? NetMark(DateTimeOffset now)
     {
         if (Paper.Position is not { } position) return 0m;

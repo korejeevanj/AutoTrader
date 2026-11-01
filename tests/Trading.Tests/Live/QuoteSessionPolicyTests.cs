@@ -41,12 +41,47 @@ public sealed class QuoteSessionPolicyTests
         }
     }
 
-    private static byte[] Packet(long token, DateTimeOffset time, decimal last, long volume, decimal atp, decimal high, decimal low)
+    private static byte[] Packet(long token, DateTimeOffset time, decimal last, long volume, decimal atp, decimal high, decimal low,
+        TimeSpan? tradeAge = null, TimeSpan? exchangeAge = null)
     {
         var message = QuoteSessionTests.Packet(token, time, last, volume);
         void Set(int offset, uint value) => BinaryPrimitives.WriteUInt32BigEndian(message.AsSpan(offset + 4), value);
         Set(12, (uint)(atp * 100)); Set(32, (uint)(high * 100)); Set(36, (uint)(low * 100));
+        Set(44, (uint)(time - (tradeAge ?? TimeSpan.Zero)).ToUnixTimeSeconds()); Set(60, (uint)(time - (exchangeAge ?? TimeSpan.Zero)).ToUnixTimeSeconds());
         return message;
+    }
+
+    [Fact]
+    public void V2_gates_the_futures_quote_on_exchange_age_not_on_how_long_ago_it_last_traded()
+    {
+        var feed = new Feed(V2(waiver: true));
+        feed.Send("Connected", Open, []);
+        for (var second = 0; second <= 20; second++)
+        {
+            var time = Open.AddSeconds(second);
+            feed.Send("Binary", time, Packet(Future, time, 100, second + 1, 100.5m, 101, 99, tradeAge: TimeSpan.FromSeconds(10)));
+            feed.Send("Binary", time, Packet(Bank, time, 100, second + 1, 100.5m, 101, 99));
+            feed.Health(time);
+        }
+        feed.Control(Open.AddSeconds(20), "arm");
+        Assert.True(feed.Session.AutoEnabled);
+        Assert.Equal(Open.AddSeconds(20), feed.Session.Quotes.Single(q => q.InstrumentToken == Future).ExchangeTimeUtc);
+        Assert.Equal(Open.AddSeconds(10), feed.Session.Quotes.Single(q => q.InstrumentToken == Future).LastTradeTimeUtc);
+    }
+
+    [Fact]
+    public void V2_still_blocks_when_the_exchange_timestamp_itself_is_stale()
+    {
+        var feed = new Feed(V2(waiver: true));
+        feed.Send("Connected", Open, []);
+        for (var second = 0; second <= 20; second++)
+        {
+            var time = Open.AddSeconds(second);
+            feed.Send("Binary", time, Packet(Future, time, 100, second + 1, 100.5m, 101, 99, exchangeAge: TimeSpan.FromSeconds(10)));
+            feed.Send("Binary", time, Packet(Bank, time, 100, second + 1, 100.5m, 101, 99));
+            feed.Health(time);
+        }
+        Assert.Throws<InvalidOperationException>(() => feed.Control(Open.AddSeconds(20), "arm"));
     }
 
     private static Feed WithOutage(QuoteRunManifest manifest, int outageSeconds, decimal resumeHigh = 101)

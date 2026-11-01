@@ -96,11 +96,13 @@ directory at the same time.
 
 ## Open decisions
 
-1. **Futures last-trade freshness gate** (needs your decision; changes entry eligibility). Options: (a) gate on exchange/receipt timestamp
-   age (already checked for every quote) and keep last-trade age as displayed evidence; (b) widen the last-trade age to 5 or 10 s; (c) keep 2 s.
-   Replay what-ifs on 21 Oct raising the single `MaximumObservationAge` to 5 s / 10 s made auto eligible on 68% / 91% of evaluations, but that
-   setting also governs option-quote freshness for fills, so the right change is a separate underlying-trade-age setting (Engine configuration,
-   Engine owner).
+1. **Futures freshness gate: decided, option (a), implemented under session policy v2.** The futures quote is fresh by its exchange and
+   receipt timestamps (limits unchanged at 2 s); the engine receives the exchange timestamp as the underlying's event time
+   (`SourceVersion` carries `+exchange-timestamp-event-time`), and last-trade age remains displayed evidence. No Engine edit. Replay what-ifs
+   (v2, auto force-armed, original settings, entry window 09:30-11:30) made auto eligible on 80% of evaluations on 21 Oct (about 8% before) and
+   93% on 22 Oct. Remaining ineligibility is mostly exchange age above 2 s between one-per-second snapshots; widening that limit also loosens
+   option-quote freshness for fills, so it is a separate decision, not made here. On 21 Oct there were still no trades: no opening-range/VWAP
+   setup formed (`NO_ACTIVE_SETUP`).
 2. **Opening-range gaps that moved a day extreme** (22 Oct case). Only a historical minute-candle backfill (new recorded event kind) can restore
    them. The watchdog shortens future outages from ~35 s to ~8 s, which makes this rarer; decide whether to build the backfill.
 3. **Scalping parameters** (entry window, attempts, target and cost gates) are Engine configuration and untested for scalping; run labelled
