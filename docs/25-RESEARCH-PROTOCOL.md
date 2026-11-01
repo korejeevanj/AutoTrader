@@ -186,6 +186,30 @@ Limits stated in advance: modelled option prices are not market prices (skew, or
 would only justify validating on real option prices (the nightly archive or a purchased history); a failure is informative because the model is close to
 the recorded prices on average and is not obviously biased against the buyer.
 
+### Checkpoint A3, 1 November 2026: intraday long-option search (run once, code `10e99c6`, frozen design plus the pre-run decay amendment)
+
+108 combinations searched walk-forward on 1,190 sessions (train 24 months, trade the next 6; 6 blocks because the last, Jul to Oct 2026, is partial).
+Out-of-sample: 536 trades over 699 days.
+
+| Out-of-sample result | Value |
+|---|---|
+| Mean net per trade | -Rs 288 (t on days: -2.64, i.e. significantly worse than zero) |
+| Total net | -Rs 154,332 per lot |
+| Win rate / winners over losers / profit factor | 32% / 1.54 / 0.74 |
+| Average hold / average premium | 69 minutes / Rs 613 |
+| Worst day / maximum drawdown per lot | -Rs 9,240 / -Rs 201,249 |
+| Doubled spread and slippage | -Rs 341 per trade |
+| Sensitivities (vol 0.85 / 1.15, expiry 7 / 30 days) | -262 / -371 / -265 / -397 per trade |
+| Blocks positive | 2 of 6 (small: +19,853 and +2,230) |
+| Average over all 108 combinations, per block | -Rs 114 to -Rs 371 per trade |
+
+**KILLED** on every criterion. The selection step added nothing: training-window winners (training means up to +Rs 269 a trade) lost out of sample, and
+the chosen combination was no better than the average combination. The payoff shape is the one the owner wanted (about a third winners, winners
+1.5 times the losers) and still loses after spread, slippage, fees and time decay. Limits: modelled prices, not market prices; the volatility scale
+was calibrated on two days.
+
+Seven of seven pre-registered tests are now killed or non-edge (H1, H2a, H2b, H3, T1, T2, A3; T3 is a borderline drawdown reducer).
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
