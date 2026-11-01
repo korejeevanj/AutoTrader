@@ -232,6 +232,14 @@ not point-in-time, and today's membership (a survivorship approximation, stated 
   decile and after the bottom decile must be at least 19 index points (about the round-trip cost of an at-the-money option at delta 0.5).
 - SURVIVES only if both hold (it would then still need an option-level test); otherwise KILLED. This is the eighth pre-registered test.
 
+### Result: bank breadth lead (run once, code `e919463`)
+
+1,190 sessions, 14 banks. Five minutes ahead: slope +37.6 index points per 1% divergence, day-clustered t +3.07 (79,723 samples), so the banks do
+lead the index measurably, but a typical (1 standard deviation) divergence predicts only +0.9 index points. Fifteen minutes ahead: t +0.42, nothing.
+Economic test (2022 deciles applied to 2023-2026): top decile +0.9 points, bottom decile -1.5 points, difference +2.3 (+/- 8.0) against the 19 points
+needed. **KILLED.** The effect is real but about one twentieth of the cost of trading it, and gone within 15 minutes. Part of it may be mechanical
+(current weights, not point-in-time ones). Eight of eight pre-registered tests are now killed or non-edge.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
