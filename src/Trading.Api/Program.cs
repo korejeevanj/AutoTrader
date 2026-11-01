@@ -91,6 +91,12 @@ builder.Services.AddSingleton(services => new NseHistoricalContractClient(
 builder.Services.AddSingleton(services => new PublishedBankInputsClient(
     services.GetRequiredService<IHttpClientFactory>().CreateClient("NseHistoricalContracts"), services.GetRequiredService<TimeProvider>()));
 if (runResearch) builder.Services.AddHostedService(services => services.GetRequiredService<HistoricalReplayService>());
+if (runResearch)
+{
+    builder.Services.Configure<ResearchArchiveOptions>(builder.Configuration.GetSection("ResearchArchive"));
+    builder.Services.AddSingleton<ResearchArchive>();
+    builder.Services.AddHostedService<ResearchArchiveWorker>();
+}
 builder.Services.Configure<LivePaperOptions>(builder.Configuration.GetSection("LivePaper"));
 if (!runLive) builder.Services.PostConfigure<LivePaperOptions>(options => options.ReadOnly = true);
 if (!runResearch) builder.Services.PostConfigure<LivePaperOptions>(options => options.ReplaysAllowed = false);
@@ -111,7 +117,7 @@ var app = builder.Build();
 app.UseExceptionHandler();
 
 app.MapHub<DashboardHub>("/hubs/dashboard");
-if (runResearch) { app.MapSyntheticRestEndpoints(); app.MapHistoricalReplay(); }
+if (runResearch) { app.MapSyntheticRestEndpoints(); app.MapHistoricalReplay(); app.MapResearchArchive(); }
 app.MapLivePaper();
 if (runResearch && app.Environment.IsDevelopment())
 {
