@@ -265,6 +265,28 @@ deciles): 2,407 on 653 days, direction right 51.9% of the time, mean move in the
 indistinguishable from zero), positive in 3 of 6 blocks (+2.8, 0.0, -4.4, +3.4, -3.4, -8.6 points), against the 19 points needed. **KILLED.**
 Nine of nine pre-registered tests are now killed or non-edge.
 
+### Blind chart game (1 November 2026, code `31598e9`)
+
+200 random moments from the 1,190 sessions (10:00-14:30), shown without dates, prices as % of the previous close: Bank Nifty 10-minute candles so far
+that day and the 14 banks' last twelve 5-minute closes, plus the India VIX change. Outcomes sealed in a separate file. Four independent Opus players,
+briefed as discretionary Bank Nifty option traders, called UP / DOWN / SKIP for the next 15 minutes. Bar fixed beforehand: about 56% right, or +19
+index points in the call direction.
+
+| Player | Calls (of 50) | Right | Mean 15-minute move in call direction |
+|---|---|---|---|
+| 1 | 30 | 43% | +6.6 (+/- 33) |
+| 2 | 31 | 32% | -1.6 (+/- 28) |
+| 3 | 32 | 56% | +1.1 (+/- 23) |
+| 4 | 21 | 48% | +7.4 (+/- 31) |
+| **All players** | **114** | **44.7%** | **+3.0 (+/- 14)** |
+| Medium-confidence calls only | 33 | 48.5% | +0.4 |
+| The owner's approach as a fixed rule (index 10m >= 30 pts, banks 5m >= 70% agree, follow) | 52 | 38.5% | -23.1 (+/- 21) |
+| Random guesses | 200 | 47.5% | -0.9 |
+| Always up | 200 | 45.5% | -3.3 |
+
+Nobody met the bar; the players together were no better than random, and higher confidence did not help (no strong-confidence calls were made).
+Limits: AI players, not the owner; 114 calls give a 95% band of about +/-9 points on the hit rate. Consistent with every earlier test.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
