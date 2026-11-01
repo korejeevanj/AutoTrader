@@ -48,7 +48,32 @@ spread on at-the-money options is tight (median about 1.2 points, about Rs 40 ro
   under every rule. Results depend almost entirely on how much room the stop allows, and three signals on one day cannot separate edge
   from luck.
 
-## 3. What would be needed to test scalping properly
+## 3. Making the replay loop usable: research risk and diagnostics
+
+Section 1 means the replay mechanism could never improve anything: under the live gates every rerun ends with zero trades. Two replay-only
+additions (never used by the live host, default off):
+
+- **Research risk** (`researchRisk` on `POST /api/live/replays`, labelled `WHAT_IF_RESEARCH_RISK_...NOT_LIVE_POLICY`): the gates receive risk sized to
+  what the paper broker actually enforces (gross cash stop plus round-trip fees, or the immediate-liquidation friction if larger) and the
+  +1R / 20-minute profit at *unchanged* volatility instead of the worst of three volatility scenarios. Everything else (fills, fees, other
+  gates, exits) is unchanged. Implemented in the session's `Model(...)`; no Engine or Risk edit.
+- **Diagnostics** (always returned, shown in the Live page under "Why it did or did not trade"): setups that formed, rejection reasons while a
+  setup was live, observed-versus-limit statistics per gate, and the closest candidate's blockers.
+
+First results on 21 Oct (v2 policy, auto force-armed; the diagnostics also replace the guessing in sections 1-2):
+
+| Variant (research risk on) | Trades | Net |
+|---|---|---|
+| recorded settings (15-minute range, to 11:30, 3 attempts, Rs 200 cash stop) | 2 (10:01 put, 10:04 put) | -711.75 (both stopped out within 5-26 s) |
+| 5-minute range, to 14:30, 10 attempts | 2 | -711.75 |
+| same, Rs 400 cash stop (net-risk limit 700) | 2 | -228.95 (-549.68 stop, +320.73 trailing profit) |
+| same, Rs 100 cash stop, quick exits | 1 | -226.31 |
+
+The two engine trades match the independent signal simulation in section 2 (put -340.76 against -341, put -370.99 against -371). The 09:32
+bullish setup never traded: at its closest, 86% of the bank weight had no usable evidence for the signal bar (`MISSING_CONSTITUENT_EVIDENCE`).
+That is a data-coverage question worth looking at on the next clean day.
+
+## 4. What would be needed to test scalping properly
 
 1. More days of clean recordings, and a signal definition that is genuinely scalp-timed (the current one is a 1-minute-bar opening-range
    breakout with a 1-minute setup lifetime).

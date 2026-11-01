@@ -43,9 +43,10 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     string? ReadinessAlert = null);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
-public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false, bool SessionPolicyV2 = false);
+public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false, bool SessionPolicyV2 = false, bool ResearchRisk = false);
 public sealed record QuoteReplayResult(string Id, string SourceRunId, string Mode, string SourceCodeVersion,
-    string ReplayCodeVersion, string ConfigurationHash, QuoteSessionCheckpoint Result, IReadOnlyList<string> Limitations);
+    string ReplayCodeVersion, string ConfigurationHash, QuoteSessionCheckpoint Result, IReadOnlyList<string> Limitations,
+    ReplayDiagnostics? Diagnostics = null);
 
 public sealed class LivePaperService : BackgroundService
 {
@@ -559,7 +560,7 @@ public sealed class LivePaperService : BackgroundService
         }
         var runner = new QuoteTradingSession(manifest, executingCodeVersion: CodeVersion, mode: EngineDataMode.PAPER_REPLAY,
             applyRecoveryBoundaries: request.EngineJson is null || manifest.EngineJson == JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!.EngineJson,
-            assumeArmed: request.AssumeAutoArmed);
+            assumeArmed: request.AssumeAutoArmed, researchRisk: request.ResearchRisk);
         var sourceManifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var sourceSession = new QuoteTradingSession(sourceManifest);
         var sourceStore = markets.StoreOf(source.Id);
@@ -570,6 +571,7 @@ public sealed class LivePaperService : BackgroundService
             if (sourceSession.Universe.Count != 0) break;
         }
         runner.FreezeReplayUniverse(sourceSession.Universe);
+        var diagnostics = new ReplayDiagnostics(); runner.Diagnostics = diagnostics;
         foreach (var item in sourceStore.Read(source.Id))
         {
             try { runner.Apply(item); }
@@ -583,7 +585,9 @@ public sealed class LivePaperService : BackgroundService
                 .. (request.EngineJson is not null ? new[] { "COUNTERFACTUAL_PAPER_DURABILITY_TIMING_NOT_OBSERVED" } : Array.Empty<string>()),
                 .. (runner.RecordingIncomplete || runner.OverriddenRecordingGaps ? new[] { "SOURCE_RECORDING_HAS_GAPS_OR_RECOVERY" } : Array.Empty<string>()),
                 .. (request.AssumeAutoArmed ? new[] { "WHAT_IF_AUTO_ARMED_FROM_START", "WHAT_IF_RECORDER_HEALTH_IGNORED" } : Array.Empty<string>()),
-                .. (request.SessionPolicyV2 ? new[] { "WHAT_IF_SESSION_POLICY_V2_APPLIED_TO_RECORDED_EVENTS" } : Array.Empty<string>())]);
+                .. (request.SessionPolicyV2 ? new[] { "WHAT_IF_SESSION_POLICY_V2_APPLIED_TO_RECORDED_EVENTS" } : Array.Empty<string>()),
+                .. (request.ResearchRisk ? new[] { "WHAT_IF_RESEARCH_RISK_CASH_STOP_AND_UNCHANGED_VOLATILITY_NOT_LIVE_POLICY" } : Array.Empty<string>())],
+            diagnostics);
         var json = JsonSerializer.Serialize(result, QuoteTradingSession.Json);
         replayStore.Create(result.Id, clock.GetUtcNow(), JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
         replayStore.Checkpoint(result.Id, runner.LastSequence, json, true);

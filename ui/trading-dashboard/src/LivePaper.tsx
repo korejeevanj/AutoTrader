@@ -30,7 +30,12 @@ interface LiveView {
   futuresBars: { startUtc: string; endUtc: string; availableAtUtc: string; open: number; high: number; low: number; close: number; volume: number }[];
 }
 interface Recording { id: string; createdAtUtc: string; lastSequence: number; engineJson?: string }
-interface ReplayResult { id: string; sourceRunId: string; mode: string; limitations: string[]; result: { paper: Paper; recordingIncomplete: boolean; candidates?: Candidate[] } }
+interface ReplayDiagnostics {
+  evaluationsWithSetup: number; evaluationsWithoutSetup: number; reasonCounts: Record<string, number>;
+  setups: { setupId: string; atIst: string; direction: string; candidateEvaluations: number; closestMissReasons: string[]; closestMissValues: Record<string, string> }[];
+  gateValues: Record<string, { samples: number; threshold: number; min: number; median: number; max: number }>;
+}
+interface ReplayResult { id: string; sourceRunId: string; mode: string; limitations: string[]; result: { paper: Paper; recordingIncomplete: boolean; candidates?: Candidate[] }; diagnostics?: ReplayDiagnostics | null }
 
 async function request<T>(path: string, signal?: AbortSignal, body?: unknown): Promise<T> {
   const deadline = AbortSignal.timeout(body === undefined ? 5000 : 120000);
@@ -64,6 +69,8 @@ export function LivePaper() {
   const [replaySource, setReplaySource] = useState('');
   const [changedConfiguration, setChangedConfiguration] = useState('');
   const [assumeAutoArmed, setAssumeAutoArmed] = useState(false);
+  const [sessionPolicyV2, setSessionPolicyV2] = useState(false);
+  const [researchRisk, setResearchRisk] = useState(false);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
   useEffect(() => {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
@@ -92,7 +99,7 @@ export function LivePaper() {
   }
   async function runReplay() {
     setBusy(true); setCommandError(''); setReplay(null);
-    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null, assumeAutoArmed })); }
+    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null, assumeAutoArmed, sessionPolicyV2, researchRisk })); }
     catch (reason) { setCommandError(reason instanceof Error ? reason.message : 'Quote replay failed'); }
     finally { setBusy(false); }
   }
@@ -155,9 +162,16 @@ export function LivePaper() {
       <label>Changed engine configuration JSON (optional)<textarea value={changedConfiguration} onChange={event => setChangedConfiguration(event.target.value)} rows={5} placeholder="Leave empty to use the frozen original configuration" /></label>
       <button disabled={busy || !recordings.find(item => item.id === replaySource)?.engineJson} onClick={() => setChangedConfiguration(recordings.find(item => item.id === replaySource)?.engineJson ?? '')}>Load frozen settings for editing</button>
       <label><input type="checkbox" checked={assumeAutoArmed} disabled={busy} onChange={event => setAssumeAutoArmed(event.target.checked)} /> What-if: assume paper-auto armed and recorder healthy</label><p className="helper">Counterfactual test of settings on recorded quotes. Ignores the original arm state and recorder gaps; feed disconnects and stale quotes still block entry. The result is labeled WHAT_IF.</p>
+      <label><input type="checkbox" checked={sessionPolicyV2} disabled={busy} onChange={event => setSessionPolicyV2(event.target.checked)} /> What-if: session policy v2 (gap healing, exchange-age freshness)</label>
+      <label><input type="checkbox" checked={researchRisk} disabled={busy} onChange={event => setResearchRisk(event.target.checked)} /> What-if: research risk (size risk to the cash stop, judge profit at unchanged volatility)</label><p className="helper">Research risk is a replay-only counterfactual. The live gates size risk to the futures structural stop and always reject one-lot options at the configured budget, so a replay under them can never trade or teach anything.</p>
       <button disabled={busy || !replaySource} onClick={() => void runReplay()}>Replay recorded quotes</button>
       {replay && <><h3>{replay.mode}</h3><p>Result {replay.id} · Source {replay.sourceRunId}</p><p>{replay.limitations.join(' · ')}</p>
         {!!replay.result.candidates?.length && <details><summary>Replayed candidate decisions</summary>{replay.result.candidates.map(candidate => <p key={candidate.contractId}>{candidate.contractId} · {enumLabel(candidate.action, ['ENTER', 'WATCH', 'SKIP', 'INSUFFICIENT_DATA'])} · {candidate.reasonCodes.join(' · ')}</p>)}</details>}
+        {replay.diagnostics && <details open><summary>Why it did or did not trade</summary>
+          <p>{replay.diagnostics.setups.length} setup(s) formed · evaluations with a live setup {replay.diagnostics.evaluationsWithSetup} · without {replay.diagnostics.evaluationsWithoutSetup}</p>
+          {replay.diagnostics.setups.map(item => <p key={item.setupId}>Setup {item.atIst} IST {item.direction}: closest candidate blocked by {item.closestMissReasons.join(', ') || 'nothing'} {Object.entries(item.closestMissValues).map(([code, value]) => `${code} ${value}`).join(' · ')}</p>)}
+          <p className="helper">Rejection reasons while a setup was live: {Object.entries(replay.diagnostics.reasonCounts).slice(0, 10).map(([code, count]) => `${code} ${count}`).join(' · ') || 'none'}</p>
+          {Object.entries(replay.diagnostics.gateValues).map(([code, stats]) => <p key={code} className="helper">{code}: observed min {num(stats.min)} · median {num(stats.median)} · max {num(stats.max)} against limit {num(stats.threshold)} ({stats.samples} samples)</p>)}</details>}
         <Ledger paper={replay.result.paper} /></>}
     </section>
   </div>;

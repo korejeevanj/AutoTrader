@@ -39,6 +39,7 @@ public sealed class QuoteTradingSession
     private readonly EngineDataMode mode;
     private readonly bool applyRecoveryBoundaries;
     private readonly bool assumeArmed;
+    private readonly bool researchRisk; // replay-only counterfactual; the live host never sets it
     private readonly EngineConfiguration settings;
     private readonly IndexStrategyConfiguration profile;
     private readonly EngineSession session;
@@ -77,6 +78,7 @@ public sealed class QuoteTradingSession
     public IReadOnlyDictionary<string, DateTimeOffset> RecoveredFrom => recoveredFrom;
     public bool RearmPending => rearmPending;
     public QuoteRunManifest Manifest { get; }
+    public ReplayDiagnostics? Diagnostics { get; set; }
     public string ExecutingCodeVersion { get; }
     public long LastSequence { get; private set; }
     public DateTimeOffset? CurrentTimeUtc { get; private set; }
@@ -101,9 +103,9 @@ public sealed class QuoteTradingSession
     public HistoricalInstrument Future { get; }
 
     public QuoteTradingSession(QuoteRunManifest manifest, QuoteSessionCheckpoint? recovered = null, string? executingCodeVersion = null,
-        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true, bool assumeArmed = false)
+        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true, bool assumeArmed = false, bool researchRisk = false)
     {
-        this.assumeArmed = assumeArmed;
+        this.assumeArmed = assumeArmed; this.researchRisk = researchRisk;
         Manifest = manifest; settings = EngineConfiguration.FromJson(manifest.EngineJson);
         ExecutingCodeVersion = executingCodeVersion ?? manifest.CodeVersion;
         this.mode = manifest.Index.IsSynthetic ? EngineDataMode.SYNTHETIC_TEST : mode ?? EngineDataMode.PAPER_LIVE_DATA;
@@ -509,6 +511,7 @@ public sealed class QuoteTradingSession
         if (manual is null) Directional = result.DirectionalEvidence;
         var allocation = engine.Allocate(input.Identity, now, session, input.Portfolio, [result]);
         Candidates = allocation.Decisions;
+        if (manual is null) Diagnostics?.Observe(now, Candidates);
         var selection = Candidates.FirstOrDefault(candidate => candidate.Action == EntryAction.ENTER);
         if (!recovering && selection is not null && EntriesHealthy(now) && paperCommittedThrough >= lastPaperEffectSequence && (manual is not null || AutoEnabled)
             && selection.QuoteId is not null && latest[Future.InstrumentToken].Sequence <= CommittedThrough
@@ -535,8 +538,21 @@ public sealed class QuoteTradingSession
             || quote.Bids.FirstOrDefault() is not { } bid || quote.Asks.FirstOrDefault() is not { } ask
             || !Manifest.Fees.Applies(now, profile.Risk.FeeProfileId, Manifest.Index.IsSynthetic)) return null;
         var expiry = HistoricalAcquisitionStore.Midnight(contract.Expiry!.Value, "Asia/Kolkata").AddHours(15).AddMinutes(30);
-        return ExperimentalOptionScenarios.Assess(future.LastPrice, contract.Strike!.Value, expiry, now, bid.Price, ask.Price,
+        var assessed = ExperimentalOptionScenarios.Assess(future.LastPrice, contract.Strike!.Value, expiry, now, bid.Price, ask.Price,
             contract.TickSize!.Value, contract.LotSize!.Value, contract.Role == HistoricalInstrumentRole.Call, risk.Value, profile.Risk.GrossCashStop, Manifest.Fees, stop);
+        return researchRisk && assessed is not null ? ApplyResearchRisk(assessed, profile.Risk.GrossCashStop) : assessed;
+    }
+
+    // Replay research only. The live gates size risk to the futures structural stop and demand a profit at the worst of three volatility
+    // scenarios, which no one-lot option can satisfy at the configured Rs 400 budget, so a replay never trades and cannot teach anything.
+    // This view sizes risk to what the paper broker actually enforces (the gross cash stop plus round-trip fees, or the immediate
+    // liquidation friction if larger) and measures the +1R/20-minute outcome at unchanged volatility. Labelled, never used live.
+    public static OptionScenarioAssessment ApplyResearchRisk(OptionScenarioAssessment model, decimal grossCashStop)
+    {
+        var unchangedVolatility = model.Scenarios.Where(point => point.UnderlyingR == 1m && point.HorizonSeconds == 1200d && point.VolatilityFactor == 1d)
+            .Select(point => (decimal?)point.NetPnl).FirstOrDefault();
+        return model with { EvidenceClass = "RESEARCH_COUNTERFACTUAL_RISK", NetRisk = Math.Max(model.Friction, grossCashStop + model.RoundTripFees),
+            FavorableNetProfit = unchangedVolatility ?? model.FavorableNetProfit };
     }
 
     private QuoteFillAssessment? Reassess(QuoteEntryApproval intent, MarketTick quote)

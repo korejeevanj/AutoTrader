@@ -52,6 +52,21 @@ public sealed class QuoteSessionPolicyTests
     }
 
     [Fact]
+    public void Research_risk_sizes_to_the_cash_stop_and_unchanged_volatility_instead_of_the_structural_stop_and_worst_volatility()
+    {
+        var inputs = new Trading.Risk.OptionScenarioInputs(55000, 55000, Open.AddDays(2), Open, 400, 401, .05m, 30, true, 150, 54850, "fees");
+        var model = new Trading.Risk.OptionScenarioAssessment("v", "MODEL_ESTIMATE", .2, 401.05m, 38, 76, 12069, NetRisk: 3533, FavorableNetProfit: -2030,
+            1.2m, 112, 0, [new(1m, .8, 1200d, 395m, -2030m), new(1m, 1d, 1200d, 420m, 520m), new(1m, 1.2, 1200d, 445m, 1270m), new(-1m, 1d, 1200d, 380m, -700m)], inputs);
+
+        var research = QuoteTradingSession.ApplyResearchRisk(model, 200);
+
+        Assert.Equal(276m, research.NetRisk);                  // gross cash stop 200 + round-trip fees 76 (friction 112 is smaller)
+        Assert.Equal(520m, research.FavorableNetProfit);       // +1R after 20 minutes at unchanged volatility
+        Assert.Equal("RESEARCH_COUNTERFACTUAL_RISK", research.EvidenceClass);
+        Assert.Equal(3533m, model.NetRisk);                    // the live assessment is untouched
+    }
+
+    [Fact]
     public void V2_gates_the_futures_quote_on_exchange_age_not_on_how_long_ago_it_last_traded()
     {
         var feed = new Feed(V2(waiver: true));

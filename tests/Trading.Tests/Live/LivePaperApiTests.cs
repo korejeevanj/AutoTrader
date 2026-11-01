@@ -45,6 +45,29 @@ public sealed class LivePaperApiTests
     }
 
     [Fact]
+    public async Task Research_replay_options_are_labelled_and_the_result_explains_what_blocked_entries()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "live-api-" + Guid.NewGuid().ToString("N"));
+        var store = new SqliteQuoteStore(Path.Combine(root, "market.sqlite"));
+        var manifest = QuoteSessionTests.Manifest();
+        store.Create(manifest.Id, manifest.CreatedAtUtc, JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
+        store.Append(QuoteSessionTests.Lifecycle());
+        await using (var host = Host(root))
+        {
+            using var client = host.CreateClient();
+            using var response = await client.PostAsJsonAsync("/api/live/replays", new QuoteReplayRequest(manifest.Id, null, true, true, true));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var limitations = document.RootElement.GetProperty("limitations").EnumerateArray().Select(item => item.GetString()).ToArray();
+            Assert.Contains("WHAT_IF_RESEARCH_RISK_CASH_STOP_AND_UNCHANGED_VOLATILITY_NOT_LIVE_POLICY", limitations);
+            Assert.Contains("WHAT_IF_SESSION_POLICY_V2_APPLIED_TO_RECORDED_EVENTS", limitations);
+            var diagnostics = document.RootElement.GetProperty("diagnostics");
+            Assert.True(diagnostics.GetProperty("evaluationsWithSetup").GetInt32() + diagnostics.GetProperty("evaluationsWithoutSetup").GetInt32() > 0);
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+    }
+
+    [Fact]
     public async Task Status_reports_free_disk_and_no_archive_fault_before_any_recording_exists()
     {
         var root = Path.Combine(Path.GetTempPath(), "live-api-" + Guid.NewGuid().ToString("N"));
