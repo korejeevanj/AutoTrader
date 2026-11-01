@@ -114,12 +114,13 @@ public sealed class ResearchArchive
         if (failures == 0) await File.WriteAllTextAsync(Path.Combine(folder, "complete.json"), "{}", token);
     }
 
-    // Minute candles for context instruments over a date range, newest window first, in 60-day windows (the Kite limit for minute data).
-    public async Task FetchIndexHistoryAsync(DateOnly from, DateOnly to, string[] symbols, CancellationToken token)
+    // Candles for context instruments over a date range, newest window first: 60-day windows for minute data, 2,000-day windows for daily data (Kite limits).
+    public async Task FetchIndexHistoryAsync(DateOnly from, DateOnly to, string[] symbols, CancellationToken token, string interval = "minute")
     {
+        var span = interval == "day" ? 2000 : 60;
         var master = KiteInstrumentMaster.Parse(await kite.MasterAsync(token), clock.GetUtcNow());
         var windows = new List<(DateOnly Start, DateOnly End)>();
-        for (var end = to; end >= from; end = end.AddDays(-60)) windows.Add((end.AddDays(-59) < from ? from : end.AddDays(-59), end));
+        for (var end = to; end >= from; end = end.AddDays(-span)) windows.Add((end.AddDays(1 - span) < from ? from : end.AddDays(1 - span), end));
         Set(Status with { Total = windows.Count * symbols.Length });
         var manifest = new List<object>();
         foreach (var symbol in symbols)
@@ -129,14 +130,15 @@ public sealed class ResearchArchive
             foreach (var (start, end) in windows)
             {
                 token.ThrowIfCancellationRequested();
-                var path = Path.Combine(root, "index-minute", symbol.Replace(' ', '_'), $"{start:yyyy-MM-dd}_{end:yyyy-MM-dd}.json");
-                await SaveAsync(path, () => kite.HistoricalRangeAsync(row.InstrumentToken, start.ToDateTime(new TimeOnly(9, 0)), end.ToDateTime(new TimeOnly(15, 59)), token),
+                var path = Path.Combine(root, interval == "day" ? "index-day" : "index-minute", symbol.Replace(' ', '_'), $"{start:yyyy-MM-dd}_{end:yyyy-MM-dd}.json");
+                await SaveAsync(path, () => kite.HistoricalRangeAsync(row.InstrumentToken, start.ToDateTime(interval == "day" ? TimeOnly.MinValue : new TimeOnly(9, 0)),
+                    end.ToDateTime(interval == "day" ? new TimeOnly(23, 59) : new TimeOnly(15, 59)), token, interval: interval),
                     manifest, new { symbol, row.InstrumentToken, start = start.ToString("yyyy-MM-dd"), end = end.ToString("yyyy-MM-dd") });
             }
         }
-        Directory.CreateDirectory(Path.Combine(root, "index-minute"));
-        await File.WriteAllTextAsync(Path.Combine(root, "index-minute", $"manifest-{clock.GetUtcNow():yyyyMMddHHmmss}.json"),
-            JsonSerializer.Serialize(new { from, to, symbols, capturedAtUtc = clock.GetUtcNow(), entries = manifest }, new JsonSerializerOptions { WriteIndented = true }), token);
+        var manifestFolder = Path.Combine(root, interval == "day" ? "index-day" : "index-minute"); Directory.CreateDirectory(manifestFolder);
+        await File.WriteAllTextAsync(Path.Combine(manifestFolder, $"manifest-{clock.GetUtcNow():yyyyMMddHHmmss}.json"),
+            JsonSerializer.Serialize(new { from, to, interval, symbols, capturedAtUtc = clock.GetUtcNow(), entries = manifest }, new JsonSerializerOptions { WriteIndented = true }), token);
     }
 
     public DateOnly TodayIst() => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(clock.GetUtcNow(), Ist).DateTime);
@@ -177,11 +179,12 @@ public static class ResearchArchiveRoutes
             return archive.TryStart("option-day", token => archive.ArchiveOptionDayAsync(day, token), day.ToString("yyyy-MM-dd"), lifetime.ApplicationStopping)
                 ? Results.Accepted("/api/research/archive/status", archive.Status) : Results.Problem(statusCode: 409, title: "Archive busy", detail: "Another archive job is running.");
         }).WithName("ResearchArchiveOptions").WithSummary("Archive one trading day of live Bank Nifty option minute candles with open interest (read-only Kite requests).");
-        group.MapPost("/index-history", (DateOnly from, DateOnly to, string? symbols, ResearchArchive archive, IHostApplicationLifetime lifetime) =>
+        group.MapPost("/index-history", (DateOnly from, DateOnly to, string? symbols, string? interval, ResearchArchive archive, IHostApplicationLifetime lifetime) =>
         {
             var list = (symbols ?? "NIFTY BANK,NIFTY 50,INDIA VIX").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (from > to || to.DayNumber - from.DayNumber > 3000) return Results.Problem(statusCode: 400, title: "Invalid range");
-            return archive.TryStart("index-history", token => archive.FetchIndexHistoryAsync(from, to, list, token), $"{from:yyyy-MM-dd}..{to:yyyy-MM-dd} {string.Join('|', list)}",
+            var step = interval ?? "minute";
+            if (from > to || to.DayNumber - from.DayNumber > 12000 || step is not ("minute" or "day")) return Results.Problem(statusCode: 400, title: "Invalid range or interval");
+            return archive.TryStart("index-history", token => archive.FetchIndexHistoryAsync(from, to, list, token, step), $"{from:yyyy-MM-dd}..{to:yyyy-MM-dd} {string.Join('|', list)}",
                 lifetime.ApplicationStopping) ? Results.Accepted("/api/research/archive/status", archive.Status)
                 : Results.Problem(statusCode: 409, title: "Archive busy", detail: "Another archive job is running.");
         }).WithName("ResearchArchiveIndexHistory").WithSummary("Fetch minute candles for context indices over a date range in 60-day windows (read-only Kite requests).");

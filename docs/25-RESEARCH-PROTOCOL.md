@@ -73,6 +73,39 @@ trade (t -2.9 on days). No day-concentration question arises because nothing is 
 patterns stops here. Remaining open items are the recording-based checkpoints (B: execution filters and breadth) and non-directional ideas,
 neither tested yet.
 
+## Trend-following family (pre-registered 1 November 2026, before any daily-history result was seen)
+
+Motivation: the owner's principle is "identify early, cut losers early, hold winners". Early identification is not supported by evidence at short
+horizons (checkpoint A). The version with published support is trend following: do not predict, react to a move that has already proven itself,
+accept many small losses and trail the winners (time-series momentum, Moskowitz, Ooi and Pedersen 2012; Hurst, Ooi and Pedersen on a century of
+trend following; cited from memory, not re-verified this session, and weaker after 2009). Few trades mean costs matter far less than intraday.
+
+Data: NIFTY BANK daily OHLC, 3 Jan 2005 to 30 Oct 2026 (5,403 bars), from Kite (`index-day`). Code: `scripts/research/trend.py`.
+
+Execution model (identical for all three rules): a desired position `d_t` (+1 long, -1 short, 0 flat) is decided at the close of day `t` and
+executed at the open of day `t+1`. Day `t+1` return = `d_(t-1)` x (open_(t+1)/close_t - 1) + `d_t` x (close_(t+1)/open_(t+1) - 1). Cost 0.05% of
+notional per side on every position change (futures-like: brokerage, exchange charges, tax and slippage); 0.10% as the stress case. One unit of
+notional, no leverage or volatility scaling.
+
+- **T1 channel breakout with a volatility stop (long/short).** Flat and close above the previous 55 days' highest high: long. Flat and close below the
+  previous 55 days' lowest low: short. Exit when the close crosses the chandelier stop: the highest close since entry minus 3 x ATR(20) for longs
+  (lowest close plus 3 x ATR(20) for shorts). ATR(20) is the 20-day mean true range.
+- **T2 12-month time-series momentum (long/short).** At each month-end set the position to the sign of the previous 252-day return; hold until the next
+  month-end.
+- **T3 trend filter (long/flat).** Long while the 50-day average close is above the 200-day average close, otherwise flat; re-evaluated daily.
+
+Family: with H1-H3 that is six pre-registered tests, so |t| >= 2.64 (Bonferroni 0.05/6, two-sided). Alpha is the intercept of daily strategy return on
+index return for T1 and T2 (heteroskedasticity and autocorrelation robust, Bartlett lag 10); for T3 it is the mean daily excess over exposure-matched
+buy-and-hold (strategy return minus average exposure x index return). A rule is classed **EDGE** only if all hold: alpha t >= 2.64; alpha positive in
+each of three equal date-thirds; still positive at 2x cost; no single calendar year supplies more than 40% of total log profit; and net Sharpe at
+least that of buy-and-hold. It is classed **RISK-MANAGED** (not an edge) if it fails the Sharpe test but keeps at least 60% of buy-and-hold CAGR with
+at most 60% of its maximum drawdown. Otherwise **KILLED**. Also reported (not criteria): trade count, win rate, average win over average loss, profit
+factor, to check the "lose small, win big" payoff shape directly.
+
+Caveat fixed in advance: Bank Nifty rose about 15-fold over the sample, so any long-biased rule can look good from drift alone; that is why alpha is
+beta-adjusted and compared with buy-and-hold. The index is a proxy for a futures position (no basis, no roll cost); an options implementation would be
+a separate test using the nightly option archive.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
