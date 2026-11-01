@@ -304,6 +304,18 @@ with the gap already in the price, so this is not tradable by an intraday option
 chance and lost points; reading only the text labels instead gives 57% / 29% / 75% on 14 / 7 / 8 calls, equally inconclusive. 21 days is far too
 few to decide; the scorer can run on every new day of the ledger.
 
+### Exploratory: outside forces (crude oil, rupee) and coin-flip filters (1 November 2026)
+
+- Yesterday's MCX crude move (2,929 daily bars, 2015-2026; known before 09:15): after a crude rise the Nifty and Bank Nifty sessions went the
+  "bearish" way 50-51% of the time (all days and the biggest 20% of moves), means -2 to -6 points; even the opening gap followed it only 48-50%.
+  Crude does predict size: Bank Nifty session range 1.88% after big crude moves versus 1.37% after quiet ones.
+- USD/INR (only Oct 2021 to Jun 2023 available as continuous history): 52% on 330 days, inside noise.
+- Coin-flip option trades (cut at Rs 1,000, trail winners after +Rs 1,000), 3 a day over 1,190 sessions: every tercile of gap size, range so far,
+  range against VIX, last 15-minute move, VIX level, VIX change and time of day lost money in 2022-23 and in 2024-26. Filters chosen on 2022-23
+  did not carry over (best: -113 -> -101; low VIX: -115 -> -199; combined: -106 -> -155 per trade). After big crude moves: -230 per trade in
+  2022-23 (worse than other days, -192) and -124 in 2024-26 (better than other days, -277); inconsistent, and negative throughout. Options
+  already price the larger move (higher implied volatility), so bigger days do not favour the buyer.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
