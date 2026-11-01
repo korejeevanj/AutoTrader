@@ -50,6 +50,29 @@ supporting evidence found).
 | B. Recording quality | after 20-30 recorded sessions with the new fields | H4: do total buy/sell quantity and depth imbalance reduce entry cost by at least 0.3 option point, or predict 30-60 s futures drift by at least 3 points in the top decile? H5: does bank breadth add out-of-sample lift over the surviving rule? |
 | C. Forward paper test | 60-80 sessions of a frozen survivor | Success: net expectancy above the round-trip cost with t at least 2 and the 95% interval's lower bound above zero. Failure: the upper bound below zero, or all profit from a handful of days. |
 
+## Results
+
+### Checkpoint A, 1 November 2026 (run once, frozen code `7604e41`, definitions unchanged)
+
+History obtained: 1,190 full sessions, 3 Jan 2022 to 30 Oct 2026, minute candles for NIFTY BANK, NIFTY 50 and INDIA VIX (Kite returned all that
+was requested, so earlier history is probably available). It matches our own 21 Oct recording in shape (down day; futures traded 80-115 points
+above the index). Net of 9.5 points per round trip:
+
+| Hypothesis | Days | Net mean per day | t | Pre / post Nov 2024 | At 2x cost | Verdict |
+|---|---|---|---|---|---|---|
+| H2a first-30-minute signal, last 30 minutes | 1,189 | -13.2 pts | -4.02 | -10.6 / -17.0 | -22.7 | KILLED |
+| H2b prev-close-to-14:59 signal, last 30 minutes | 1,189 | -9.3 pts | -2.82 | -7.4 / -12.0 | -18.8 | KILLED |
+| H3 10-minute breakout, 20-minute hold | 1,190 | -126 pts (11.2 trades a day) | -18.5 | -132 / -117 | -233 | KILLED |
+| H1 regime forecast (RMSE vs better baseline) | 793 forecast days | 4.9% improvement (needs 10%) | - | - | - | KILLED |
+
+Before costs the effects are essentially zero, which is why costs decide: H2a -3.7 pts per day (t -1.1), H2b +0.2 (t 0.1), H3 -1.8 pts per
+trade (t -2.9 on days). No day-concentration question arises because nothing is positive. The regime forecast does carry some information
+(model log-RMSE 0.424 against 0.446 for the trailing 20-day average) but not enough under the frozen threshold.
+
+**Stop rule triggered:** H1-H3 are all killed on more than two years of data. By the protocol the directional-edge search on index price
+patterns stops here. Remaining open items are the recording-based checkpoints (B: execution filters and breadth) and non-directional ideas,
+neither tested yet.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
