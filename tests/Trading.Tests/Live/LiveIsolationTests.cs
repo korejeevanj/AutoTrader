@@ -54,6 +54,16 @@ public sealed class LiveIsolationTests
     }
 
     [Fact]
+    public async Task Default_test_hosts_never_point_at_the_real_live_recordings_or_archive_them()
+    {
+        await using var host = new WebApplicationFactory<Program>();
+        var options = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<LivePaperOptions>>().Value;
+        Assert.Equal(TestHostIsolation.LiveRoot, options.RootDirectory);
+        Assert.False(options.ArchiveClosedDays);
+        Assert.False(options.ConnectOnStartup);
+    }
+
+    [Fact]
     public async Task Default_mode_keeps_every_surface()
     {
         await using var host = Host(TempRoot(), "Full");
