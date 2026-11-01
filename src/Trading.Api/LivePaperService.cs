@@ -20,6 +20,8 @@ public sealed class LivePaperOptions
     public string RootDirectory { get; set; } = "../../data/live";
     public string EngineProfile { get; set; } = "../Trading.Engine/engine.paper.example.json";
     public string FeeConfiguration { get; set; } = "../Trading.Replay/replay.example.json";
+    // No message of any kind for this long inside the session forces a reconnect. Zero disables it.
+    public double FeedWatchdogSeconds { get; set; } = 5;
 }
 public sealed record LivePaperView(string Mode, string Status, string? ErrorCode, string CredentialStatus,
     string? RunId, DateOnly? TradingDate, DateTimeOffset? AsOfUtc, bool Connected, bool AutoEnabled,
@@ -29,7 +31,8 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     IReadOnlyList<HistoricalCandle> FuturesBars, IReadOnlyList<CandidateAssessment> Candidates, IReadOnlyList<LiveQuoteFreshness> QuoteFreshness,
     QuotePaperState? Paper, decimal? SessionNet, PositionDecision? PositionDecision, IReadOnlyList<GateResult> ContextGates,
     DirectionalEvidence? Directional, bool PaperPersistenceHealthy, bool PaperPersistencePending,
-    long MarketRecordingBytes, long FreeDiskBytes, double RecordedMessagesPerSecond, string? ArchiveError);
+    long MarketRecordingBytes, long FreeDiskBytes, double RecordedMessagesPerSecond, string? ArchiveError,
+    string? LastDisconnectReason = null, double? LastReconnectSeconds = null, int WatchdogReconnects = 0);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
 public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false);
@@ -68,6 +71,12 @@ public sealed class LivePaperService : BackgroundService
     private CancellationToken stopping;
     private CancellationTokenSource? connectionLifetime;
     private string? archiveError;
+    private DateTimeOffset lastMessageAtUtc, disconnectedAtUtc;
+    private bool watchdogFired;
+    private string? lastDisconnectReason;
+    private double? lastReconnectSeconds;
+    private int watchdogReconnects;
+    private bool awaitingFirstPacket;
     private DateOnly? archiveAttemptedOn;
     private sealed record StorageSample(long MarketBytes, long FreeBytes, double MessagesPerSecond);
     private StorageSample storageSample = new(0, 0, 0);
@@ -114,7 +123,8 @@ public sealed class LivePaperService : BackgroundService
             acknowledged?.Paper.Position?.Approval.Id == session?.Paper.Position?.Approval.Id ? session?.LastPositionDecision : null,
             session?.ContextGates ?? [], session?.Directional, paperWriter?.Healthy == true, !lastCommit.IsCompleted,
             storage.MarketBytes, storage.FreeBytes, storage.MessagesPerSecond,
-            archiveError ?? (markets.Faults.Count != 0 ? "MARKET_FILE_UNREADABLE" : null));
+            archiveError ?? (markets.Faults.Count != 0 ? "MARKET_FILE_UNREADABLE" : null),
+            lastDisconnectReason, lastReconnectSeconds, watchdogReconnects);
         }
     }
 
@@ -249,6 +259,7 @@ public sealed class LivePaperService : BackgroundService
                     if (session is not null && recorder is not null && status is not ("StorageFault" or "RollingOver" or "Stopping"))
                     {
                         if (NeedsNewReferences()) connectionLifetime?.Cancel();
+                        CheckWatchdog(clock.GetUtcNow());
                         PublishLocked("Health", JsonSerializer.SerializeToUtf8Bytes(new QuoteRecorderHealth(recorder.Healthy, recorder.DurableSequence), QuoteTradingSession.Json));
                     }
                 }
@@ -392,6 +403,7 @@ public sealed class LivePaperService : BackgroundService
                     lock (gate)
                     {
                         connectionId = Guid.NewGuid().ToString("N"); status = "Connected"; errorCode = null;
+                        lastMessageAtUtc = clock.GetUtcNow(); watchdogFired = false; awaitingFirstPacket = disconnectedAtUtc != default;
                         PublishLocked("Connected", []);
                         subscribed = session!.Manifest.TradingDate != LocalDate(clock.GetUtcNow()) && session.Paper.Position is { } overnight
                             ? [overnight.Approval.Contract.InstrumentToken]
@@ -406,6 +418,9 @@ public sealed class LivePaperService : BackgroundService
                         long[] additional;
                         lock (gate)
                         {
+                            lastMessageAtUtc = received;
+                            if (awaitingFirstPacket && kind == "Binary")
+                            { awaitingFirstPacket = false; lastReconnectSeconds = (received - disconnectedAtUtc).TotalSeconds; }
                             PublishLocked(kind, bytes, received);
                             additional = session!.Manifest.Instruments.Where(item => session.Manifest.TradingDate == LocalDate(clock.GetUtcNow())
                                 && session.Universe.Contains(item.Id) && !subscribed.Contains(item.InstrumentToken))
@@ -425,7 +440,8 @@ public sealed class LivePaperService : BackgroundService
                     lock (gate)
                     {
                         connectionLifetime = null;
-                        status = "Reconnecting"; errorCode = error is KiteDataException provider ? provider.Code : "STREAM_DISCONNECTED";
+                        status = "Reconnecting"; errorCode = watchdogFired ? "FEED_WATCHDOG" : error is KiteDataException provider ? provider.Code : "STREAM_DISCONNECTED";
+                        lastDisconnectReason = errorCode; disconnectedAtUtc = clock.GetUtcNow();
                         PublishLocked("Disconnected", Encoding.UTF8.GetBytes(errorCode));
                     }
                     await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5)))), clock, token);
@@ -522,6 +538,20 @@ public sealed class LivePaperService : BackgroundService
                 : quoteAge is >= 0 and <= 2 && receiptAge is >= 0 and <= 2 ? "fresh" : "stale-or-unavailable";
             return new LiveQuoteFreshness(tick.InstrumentToken, state, quoteAge, receiptAge, tradeAge);
         }).ToArray();
+    }
+
+    // Called under the gate from the 250 ms timer. Cancelling the connection token aborts the pending receive, and the feed loop
+    // then records Disconnected(FEED_WATCHDOG) and reconnects with a fresh subscription.
+    private void CheckWatchdog(DateTimeOffset now)
+    {
+        if (options.FeedWatchdogSeconds <= 0 || status != "Connected" || connectionLifetime is null || watchdogFired) return;
+        var date = LocalDate(now);
+        if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) return;
+        var midnight = HistoricalAcquisitionStore.Midnight(date, "Asia/Kolkata");
+        if (!FeedWatchdog.IsStalled(now, lastMessageAtUtc, midnight.AddHours(9).AddMinutes(15), midnight.AddHours(15).AddMinutes(30),
+            TimeSpan.FromSeconds(options.FeedWatchdogSeconds))) return;
+        watchdogFired = true; watchdogReconnects++;
+        connectionLifetime.Cancel();
     }
 
     private bool NeedsNewReferences()
