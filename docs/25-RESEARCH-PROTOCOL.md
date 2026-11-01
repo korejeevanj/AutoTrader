@@ -175,6 +175,13 @@ sensitivities (volatility scale 0.85/1.15, expiry 7/30 days). Otherwise **KILLED
 profit factor, average holding minutes, worst day and maximum drawdown in rupees per lot, and the average over all 108 combinations out of sample
 (to show whether the selection step added anything).
 
+**Amendment, made before any real-data run (commit following `6865732`).** The vehicle said time to expiry falls with real elapsed time. A plumbing test on
+pure random-walk data showed this flatters a long option: gross result +Rs 61 per trade where a fairly priced option gives about zero, because variance
+accrues only in the 375 trading minutes of a session while calendar-minute decay assumes it accrues all day. The convention is now trading-time decay:
+remaining life = (calendar days x 252/365 - elapsed minutes/375) / 252. After the change pure noise nets about -Rs 100 per trade, matching the expected
+costs of about Rs 110. The volatility calibration (1.00 x India VIX) used calendar time on six-day options and moves by about 3% under this convention,
+inside the stated 0.85/1.15 sensitivity. Nothing else in the frozen design changed.
+
 Limits stated in advance: modelled option prices are not market prices (skew, order-book depth and fast-market spreads are not modelled), so a pass here
 would only justify validating on real option prices (the nightly archive or a purchased history); a failure is informative because the model is close to
 the recorded prices on average and is not obviously biased against the buyer.
