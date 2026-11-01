@@ -32,6 +32,9 @@ public sealed class LiveIsolationTests
         Assert.False(readiness!.Ready);
         Assert.Contains(readiness.Checks, check => check.Code == "LIVE_RUN_PREPARED" && !check.Ok);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/live/status")).StatusCode);
+        using var replay = await client.PostAsJsonAsync("/api/live/replays", new QuoteReplayRequest("any"));
+        Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode);
+        Assert.Contains("REPLAYS_RUN_IN_THE_RESEARCH_INSTANCE", await replay.Content.ReadAsStringAsync());
     }
 
     [Fact]

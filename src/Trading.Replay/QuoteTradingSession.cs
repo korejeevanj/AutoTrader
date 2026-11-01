@@ -66,7 +66,8 @@ public sealed class QuoteTradingSession
     // paper-persistence stall tolerance, a prior-run manual-lifecycle waiver, auto re-arm after a clean recovery,
     // and disclosed healing of short feed gaps using the exchange's own cumulative average traded price.
     public const string PolicyV2 = "live-session-policy-v2";
-    public static readonly TimeSpan MaximumRecoverableGap = TimeSpan.FromSeconds(30), RearmStability = TimeSpan.FromSeconds(10);
+    // Below one minute the engine's contiguous-bar check also protects: a gap that swallows a whole minute bar leaves VWAP unavailable by itself.
+    public static readonly TimeSpan MaximumRecoverableGap = TimeSpan.FromSeconds(60), RearmStability = TimeSpan.FromSeconds(10);
     private readonly Dictionary<string, FeedGapState> feedGaps = [];
     private readonly Dictionary<string, Dictionary<long, decimal>> atpByMinute = [];
     private readonly Dictionary<string, DateTimeOffset> recoveredFrom = [];
@@ -312,10 +313,12 @@ public sealed class QuoteTradingSession
     private void HealFeedGap(string id, MarketTick tick, DateTimeOffset now)
     {
         if (!feedGaps.Remove(id, out var gap)) return;
-        if (now - gap.StartUtc > MaximumRecoverableGap || gap.DayHigh is null || gap.DayLow is null || tick.DayHigh != gap.DayHigh
-            || tick.DayLow != gap.DayLow || tick.AveragePrice is not > 0 || tick.ExchangeTimeUtc is null || !bars.TryGetValue(id, out var builder))
+        var reason = now - gap.StartUtc > MaximumRecoverableGap ? "GAP_TOO_LONG"
+            : gap.DayHigh is null || gap.DayLow is null || tick.AveragePrice is not > 0 || tick.ExchangeTimeUtc is null ? "EXCHANGE_FIELDS_MISSING"
+            : tick.DayHigh != gap.DayHigh || tick.DayLow != gap.DayLow ? "DAY_EXTREME_MOVED_DURING_GAP" : null;
+        if (reason is not null || !bars.TryGetValue(id, out var builder))
         {
-            Issues = Issues.Append("FEED_GAP_NOT_RECOVERABLE").Distinct(StringComparer.Ordinal).ToArray();
+            Issues = Issues.Append("FEED_GAP_NOT_RECOVERABLE:" + (reason ?? "UNKNOWN_INSTRUMENT")).Distinct(StringComparer.Ordinal).ToArray();
             return;
         }
         builder.Restore(builder.State with { CompleteCoverage = true });

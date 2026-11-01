@@ -88,16 +88,16 @@ public sealed class QuoteSessionPolicyTests
     {
         var feed = WithOutage(V2(), 8, resumeHigh: 102);
         Assert.False(feed.Session.Checkpoint().Bars["future"].CompleteCoverage);
-        Assert.Contains("FEED_GAP_NOT_RECOVERABLE", feed.Session.Issues);
+        Assert.Contains("FEED_GAP_NOT_RECOVERABLE:DAY_EXTREME_MOVED_DURING_GAP", feed.Session.Issues);
         Assert.Empty(feed.Session.RecoveredFrom);
     }
 
     [Fact]
     public void An_outage_longer_than_the_recoverable_limit_stays_void()
     {
-        var feed = WithOutage(V2(), 40);
+        var feed = WithOutage(V2(), 70);
         Assert.False(feed.Session.Checkpoint().Bars["future"].CompleteCoverage);
-        Assert.Contains("FEED_GAP_NOT_RECOVERABLE", feed.Session.Issues);
+        Assert.Contains("FEED_GAP_NOT_RECOVERABLE:GAP_TOO_LONG", feed.Session.Issues);
     }
 
     [Fact]
@@ -106,7 +106,7 @@ public sealed class QuoteSessionPolicyTests
         var feed = WithOutage(QuoteSessionTests.Manifest(), 8);
         Assert.False(feed.Session.Checkpoint().Bars["future"].CompleteCoverage);
         Assert.DoesNotContain("FEED_GAP_RECOVERED_EXCHANGE_ATP", feed.Session.Issues);
-        Assert.DoesNotContain("FEED_GAP_NOT_RECOVERABLE", feed.Session.Issues);
+        Assert.DoesNotContain(feed.Session.Issues, issue => issue.StartsWith("FEED_GAP_NOT_RECOVERABLE", StringComparison.Ordinal));
     }
 
     [Fact]

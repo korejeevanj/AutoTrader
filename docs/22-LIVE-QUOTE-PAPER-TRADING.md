@@ -9,6 +9,10 @@ path. Automated software checks use controlled data. An authenticated market
 session, actual machine recording throughput and the model's empirical accuracy
 have not been established by those checks.
 
+> Update 1 November 2026: session policy v2 (feed-gap healing, manual-lifecycle waiver, auto re-arm, paper stall tolerance), the 5 s feed
+> watchdog, the Live/Research operating modes and the readiness checklist are described in [23 live runbook](23-LIVE-RUNBOOK.md).
+> Where they differ from the policy below, v2 applies to runs whose manifest records it; earlier recordings keep the original behaviour.
+
 ## Accepted policy
 
 - BANKNIFTY only; existing futures ORB/VWAP and weighted-bank strategy. Complete

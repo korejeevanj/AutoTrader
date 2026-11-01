@@ -27,6 +27,8 @@ npm --prefix ui/trading-dashboard run test:e2e         # Playwright; stop manual
 npm --prefix ui/trading-dashboard run test:e2e -- --project=desktop --grep "freezes two"   # single e2e
 ```
 
+Live session operation (modes `AutoTrader:Mode=Live|Research|Full`, frozen publish, morning check) is in `docs/23-LIVE-RUNBOOK.md`; scripts are in `scripts/live/`.
+
 Run locally (ports 5080/5173 are fixed; e2e starts its own processes with an isolated journal, so free both ports first):
 
 ```powershell

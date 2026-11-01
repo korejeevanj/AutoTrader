@@ -93,6 +93,7 @@ builder.Services.AddSingleton(services => new PublishedBankInputsClient(
 if (runResearch) builder.Services.AddHostedService(services => services.GetRequiredService<HistoricalReplayService>());
 builder.Services.Configure<LivePaperOptions>(builder.Configuration.GetSection("LivePaper"));
 if (!runLive) builder.Services.PostConfigure<LivePaperOptions>(options => options.ReadOnly = true);
+if (!runResearch) builder.Services.PostConfigure<LivePaperOptions>(options => options.ReplaysAllowed = false);
 builder.Services.AddSingleton<LivePaperService>();
 if (runLive) builder.Services.AddHostedService(services => services.GetRequiredService<LivePaperService>());
 builder.Services.AddProblemDetails();

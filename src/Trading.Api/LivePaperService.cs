@@ -24,6 +24,8 @@ public sealed class LivePaperOptions
     public double FeedWatchdogSeconds { get; set; } = 5;
     // Research instance: reads recordings and runs what-if replays but never starts, controls or archives the live run.
     public bool ReadOnly { get; set; }
+    // Live instance: a replay would spend minutes of CPU next to the feed, so it runs in the research instance instead.
+    public bool ReplaysAllowed { get; set; } = true;
 }
 public sealed record ReadinessCheck(string Code, bool Ok, string Detail);
 public sealed record LiveReadiness(string Phase, string Severity, bool Ready, IReadOnlyList<ReadinessCheck> Checks, DateTimeOffset AsOfUtc);
@@ -532,6 +534,7 @@ public sealed class LivePaperService : BackgroundService
 
     public QuoteReplayResult Rehearse()
     {
+        if (!options.ReplaysAllowed) throw new InvalidOperationException("REPLAYS_RUN_IN_THE_RESEARCH_INSTANCE");
         var template = QuoteRehearsal.Manifest();
         var manifest = template with { Id = "synthetic-quotes-" + Guid.NewGuid().ToString("N"), CodeVersion = CodeVersion };
         var store = markets.ForDate(LocalDate(clock.GetUtcNow()));
@@ -544,6 +547,7 @@ public sealed class LivePaperService : BackgroundService
 
     public QuoteReplayResult Replay(QuoteReplayRequest request)
     {
+        if (!options.ReplaysAllowed) throw new InvalidOperationException("REPLAYS_RUN_IN_THE_RESEARCH_INSTANCE");
         var source = markets.Runs().SingleOrDefault(item => item.Id == request.SourceRunId) ?? throw new InvalidOperationException("RECORDING_NOT_FOUND");
         var manifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var originalCode = manifest.CodeVersion;
