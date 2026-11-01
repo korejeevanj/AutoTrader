@@ -125,16 +125,21 @@ public sealed class ResearchArchive
         var manifest = new List<object>();
         foreach (var symbol in symbols)
         {
-            // Indices live on NSE (Nifty 50, Bank Nifty, India VIX) or BSE (Sensex); NSE wins when a symbol exists on both.
-            var row = master.Instruments.FirstOrDefault(item => item.Exchange == "NSE" && item.TradingSymbol == symbol)
-                ?? master.Instruments.FirstOrDefault(item => item.Exchange == "BSE" && item.TradingSymbol == symbol && item.InstrumentType == "EQ")
+            // "FUT:EXCHANGE:NAME" (e.g. FUT:MCX:CRUDEOIL, FUT:CDS:USDINR) selects the nearest futures contract and asks Kite for its continuous
+            // history (Kite supports continuous data for futures only). Otherwise an index on NSE or BSE; NSE wins when a symbol exists on both.
+            var future = symbol.StartsWith("FUT:", StringComparison.Ordinal) ? symbol.Split(':') : null;
+            var row = (future is { Length: 3 } parts
+                ? master.Instruments.Where(item => item.Exchange == parts[1] && item.Name == parts[2] && item.InstrumentType == "FUT" && item.Expiry >= DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime))
+                    .OrderBy(item => item.Expiry).FirstOrDefault()
+                : master.Instruments.FirstOrDefault(item => item.Exchange == "NSE" && item.TradingSymbol == symbol)
+                  ?? master.Instruments.FirstOrDefault(item => item.Exchange == "BSE" && item.TradingSymbol == symbol && item.InstrumentType == "EQ"))
                 ?? throw new InvalidDataException("SYMBOL_NOT_IN_MASTER:" + symbol);
             foreach (var (start, end) in windows)
             {
                 token.ThrowIfCancellationRequested();
-                var path = Path.Combine(root, interval == "day" ? "index-day" : "index-minute", symbol.Replace(' ', '_'), $"{start:yyyy-MM-dd}_{end:yyyy-MM-dd}.json");
+                var path = Path.Combine(root, interval == "day" ? "index-day" : "index-minute", symbol.Replace(' ', '_').Replace(':', '_'), $"{start:yyyy-MM-dd}_{end:yyyy-MM-dd}.json");
                 await SaveAsync(path, () => kite.HistoricalRangeAsync(row.InstrumentToken, start.ToDateTime(interval == "day" ? TimeOnly.MinValue : new TimeOnly(9, 0)),
-                    end.ToDateTime(interval == "day" ? new TimeOnly(23, 59) : new TimeOnly(15, 59)), token, interval: interval),
+                    end.ToDateTime(interval == "day" ? new TimeOnly(23, 59) : new TimeOnly(15, 59)), token, interval: interval, continuous: future is not null),
                     manifest, new { symbol, row.InstrumentToken, start = start.ToString("yyyy-MM-dd"), end = end.ToString("yyyy-MM-dd") });
             }
         }

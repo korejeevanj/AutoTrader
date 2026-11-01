@@ -45,11 +45,11 @@ public sealed class KiteHistoricalClient(HttpClient client, Func<KiteCredentials
     }
     // Multi-day candles for research archives (Kite allows up to 60 days of minute data per request). Read-only; same throttling as every other call.
     public Task<byte[]> HistoricalRangeAsync(long instrumentToken, DateTime fromLocal, DateTime toLocal, CancellationToken cancellationToken,
-        bool openInterest = false, string interval = "minute")
+        bool openInterest = false, string interval = "minute", bool continuous = false)
     {
         if (instrumentToken <= 0 || fromLocal >= toLocal || interval is not ("minute" or "day" or "5minute" or "15minute" or "60minute")) throw new ArgumentException("Invalid range request.");
         string Stamp(DateTime value) => Uri.EscapeDataString(value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
-        return GetAsync($"instruments/historical/{instrumentToken}/{interval}?from={Stamp(fromLocal)}&to={Stamp(toLocal)}&continuous=0&oi={(openInterest ? 1 : 0)}", cancellationToken);
+        return GetAsync($"instruments/historical/{instrumentToken}/{interval}?from={Stamp(fromLocal)}&to={Stamp(toLocal)}&continuous={(continuous ? 1 : 0)}&oi={(openInterest ? 1 : 0)}", cancellationToken);
     }
     public Task<byte[]> MasterAsync(CancellationToken cancellationToken) => GetAsync("instruments", cancellationToken);
 

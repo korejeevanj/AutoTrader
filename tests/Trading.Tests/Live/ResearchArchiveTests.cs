@@ -27,6 +27,8 @@ public sealed class ResearchArchiveTests
         "instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange",
         "260105,1017,NIFTY BANK,NIFTY BANK,0,,0,0.05,1,EQ,INDICES,NSE",
         "265,1,SENSEX,SENSEX,0,,0,0.05,1,EQ,INDICES,BSE",
+        "777,7,CRUDEOIL26NOVFUT,CRUDEOIL,0,2099-11-19,0,1,100,FUT,MCX-FUT,MCX",
+        "778,8,CRUDEOIL26DECFUT,CRUDEOIL,0,2099-12-17,0,1,100,FUT,MCX-FUT,MCX",
         "1,1,BANKNIFTY26OCT55000CE,BANKNIFTY,0,2026-10-27,55000,0.05,30,CE,NFO-OPT,NFO",
         "2,2,BANKNIFTY26OCT55000PE,BANKNIFTY,0,2026-10-27,55000,0.05,30,PE,NFO-OPT,NFO",
         "3,3,BANKNIFTY26OCT70000CE,BANKNIFTY,0,2026-10-27,70000,0.05,30,CE,NFO-OPT,NFO",
@@ -108,6 +110,18 @@ public sealed class ResearchArchiveTests
         Assert.Equal("Completed", status.State);
         Assert.True(Directory.Exists(Path.Combine(root, "index-day", "SENSEX")));
         Assert.Contains(stub.Requests, request => request.Contains("/historical/265/day", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_futures_series_uses_the_nearest_contract_and_asks_for_continuous_history()
+    {
+        var (archive, stub, root) = Build();
+
+        var status = await Run(archive, token => archive.FetchIndexHistoryAsync(new(2026, 1, 1), new(2026, 2, 1), ["FUT:MCX:CRUDEOIL"], token, "day"));
+
+        Assert.Equal("Completed", status.State);
+        Assert.Contains(stub.Requests, request => request.Contains("/historical/777/day", StringComparison.Ordinal) && request.Contains("continuous=1", StringComparison.Ordinal));
+        Assert.True(Directory.Exists(Path.Combine(root, "index-day", "FUT_MCX_CRUDEOIL")));
     }
 
     [Fact]
