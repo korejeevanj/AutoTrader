@@ -139,6 +139,46 @@ Verified from our data in the same review: India VIX exceeded the next 21 tradin
 15.4; 15.0 against 12.8 since 2022), and 76% of overnight Bank Nifty gaps since 2022 exceed 66 points (median 137), so a Rs 1,000 stop on a lot of 30
 does not cap an overnight loss.
 
+## Intraday long-option search (pre-registered 1 November 2026, before any result)
+
+The owner's actual use case: the system finds an entry itself, buys one lot of a call or put, trails a stop, sells, intraday, long options only. We have
+no historical option prices, so options are modelled from the index and India VIX minute history (1,190 sessions, Jan 2022 to Oct 2026). Calibration
+on the two recorded days: Bank Nifty near-the-money option implied volatility divided by India VIX has median 1.00 on both days (10th to 90th percentile
+0.79 to 1.20). The search below is ONE test (it counts as the seventh pre-registered test, so |t| >= 2.69, Bonferroni 0.05/7).
+Code: `scripts/research/option_sim.py`, `scripts/research/signal_search.py`.
+
+**Vehicle (frozen).** One lot (30 units). Strike: nearest 100 to the index at the signal minute close; call on an up signal, put on a down signal.
+Price: Black-76, zero rate, forward = index, volatility = 1.0 x India VIX / 100 at the same minute, time to expiry 14 calendar days at entry and falling
+with real elapsed time (sensitivities at 7 and 30 days, and volatility scale 0.85 and 1.15, are reported, not used for selection). Entry fills at the
+next minute's open: ask = model + half spread, where half spread = 0.135% of the model price (recorded median spread was 0.27%), plus one tick (0.05)
+of slippage; exit symmetric on the bid. Fees: the paper fee schedule in `replay.example.json` (brokerage Rs 20 an order, exchange 0.03553%, SEBI 0.0001%,
+GST 18%, stamp 0.003% on the buy, securities transaction tax 0.15% on the sell premium, i.e. the April 2026 rate for every year, which is conservative for
+earlier years). Stress case: spread and slippage doubled.
+
+**Exit (frozen).** Trailing stop on the modelled bid: exit when the bid falls X below the running maximum since entry (the initial stop is entry less X),
+checked at each minute close and filled at the next minute's open (so gaps through the stop are paid). Forced exit at 15:15. No overnight holding. At most
+3 trades a day, one at a time, entries 09:30 to 14:30. X in {8%, 12%, 16%} of the premium (8% of a Rs 420 premium is about the owner's Rs 1,000 limit).
+
+**Signals (frozen search space, 18 signals x 3 stops x 2 filters = 108 combinations).** All use only data up to the signal minute.
+- Momentum M(N, theta, side): index return over the last N minutes (N in {15, 30, 60}) at least theta (1.5 or 2.0) times the trailing 120-minute one-minute
+  volatility scaled by sqrt(N); direction with the move (continuation) or against it (reversal): 12 signals.
+- Break B(N, side): the minute close breaks the prior N-minute high or low (N in {30, 60}) or yesterday's high or low; with the break or against it: 6 signals.
+- Filter: none, or India VIX above its trailing 60-session median.
+
+**Procedure (frozen).** Walk-forward: train on the previous 24 months, trade the next 6 months with the single combination that had the highest mean net
+rupees per trade in training (at least 100 training trades), repeat. The first training window is Jan 2022 to Dec 2023, so the out-of-sample blocks are
+2024 H1 through 2026 H1/H2. Only the chosen combination's out-of-sample trades are evaluated; nothing else is tuned.
+
+**Success (all required).** Out-of-sample mean net rupees per trade above zero with day-clustered |t| >= 2.69; at least 4 of the 5 blocks positive;
+still positive with doubled spread and slippage; no single block supplies more than 50% of the profit; and the result is not reversed by the
+sensitivities (volatility scale 0.85/1.15, expiry 7/30 days). Otherwise **KILLED**. Reported regardless: trades, win rate, average win over average loss,
+profit factor, average holding minutes, worst day and maximum drawdown in rupees per lot, and the average over all 108 combinations out of sample
+(to show whether the selection step added anything).
+
+Limits stated in advance: modelled option prices are not market prices (skew, order-book depth and fast-market spreads are not modelled), so a pass here
+would only justify validating on real option prices (the nightly archive or a purchased history); a failure is informative because the model is close to
+the recorded prices on average and is not obviously biased against the buyer.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
