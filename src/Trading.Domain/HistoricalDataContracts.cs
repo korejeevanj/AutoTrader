@@ -1,6 +1,7 @@
 namespace Trading.Domain;
 
-public enum HistoricalInstrumentRole { CashIndex, Futures, Constituent, Call, Put }
+// ContextIndex (India VIX, Nifty 50) is recorded for research only; no strategy or gate reads it.
+public enum HistoricalInstrumentRole { CashIndex, Futures, Constituent, Call, Put, ContextIndex }
 public sealed record HistoricalInstrument
 {
     public string Id { get; init; } = "";

@@ -50,7 +50,15 @@ public static class KiteStreamingDecoder
             packet.Length == 184 ? Time(Number(packet, 44)) : null,
             packet.Length == 184 ? Time(Number(packet, 60)) : packet.Length == 32 ? Time(Number(packet, 28)) : null,
             receivedAt, sequence, index, bids.AsReadOnly(), asks.AsReadOnly(), null,
-            packet.Length is 44 or 184 ? Number(packet, 32) / 100m : null,
-            packet.Length is 44 or 184 ? Number(packet, 36) / 100m : null);
+            packet.Length is 44 or 184 ? Number(packet, 32) / 100m : packet.Length is 28 or 32 ? Number(packet, 8) / 100m : null,
+            packet.Length is 44 or 184 ? Number(packet, 36) / 100m : packet.Length is 28 or 32 ? Number(packet, 12) / 100m : null,
+            packet.Length is 44 or 184 ? Number(packet, 8) : null,
+            packet.Length is 44 or 184 ? Number(packet, 20) : null,
+            packet.Length is 44 or 184 ? Number(packet, 24) : null,
+            packet.Length is 44 or 184 ? Number(packet, 28) / 100m : packet.Length is 28 or 32 ? Number(packet, 16) / 100m : null,
+            packet.Length is 44 or 184 ? Number(packet, 40) / 100m : packet.Length is 28 or 32 ? Number(packet, 20) / 100m : null,
+            packet.Length == 184 ? Number(packet, 48) : null,
+            packet.Length == 184 ? Number(packet, 52) : null,
+            packet.Length == 184 ? Number(packet, 56) : null);
     }
 }

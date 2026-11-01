@@ -7,6 +7,8 @@ public sealed record LiveBankReferences(HistoricalWeightSet? Weights, byte[] Mem
 
 public static class LiveBankNiftyReferences
 {
+    public static readonly string[] ContextIndexSymbols = ["INDIA VIX", "NIFTY 50"];
+
     public static async Task<LiveBankReferences> LoadAsync(PublishedBankInputsClient weightsClient, HttpClient http,
         string cacheRoot, DateOnly date, DateTimeOffset captured, CancellationToken token)
     {
@@ -57,6 +59,10 @@ public static class LiveBankNiftyReferences
         var selected = new List<(KiteMasterRow Row, HistoricalInstrumentRole Role)> { (index, HistoricalInstrumentRole.CashIndex), (future, HistoricalInstrumentRole.Futures) };
         selected.AddRange(candidates.Where(row => row.Expiry == future.Expiry && row.InstrumentType is "CE" or "PE")
             .Select(row => (row, row.InstrumentType == "CE" ? HistoricalInstrumentRole.Call : HistoricalInstrumentRole.Put)));
+        // Context indices for research only (volatility regime, broad market). Missing rows are skipped and disclosed by the host.
+        foreach (var symbol in ContextIndexSymbols)
+            if (master.Instruments.FirstOrDefault(row => row.Exchange == "NSE" && row.TradingSymbol == symbol) is { } context)
+                selected.Add((context, HistoricalInstrumentRole.ContextIndex));
         foreach (var member in weights?.Members ?? [])
         {
             var row = master.Instruments.SingleOrDefault(row => row.Exchange == "NSE" && "NSE:" + row.TradingSymbol == member.InstrumentId && row.InstrumentType == "EQ");

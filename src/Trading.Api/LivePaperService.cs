@@ -375,6 +375,8 @@ public sealed class LivePaperService : BackgroundService
         if (bank.Weights is { } weights) bank = bank with { Weights = weights with { AvailableAtUtc = captured, EffectiveFromUtc = captured,
             PublicationEvidence = weights.PublicationEvidence is { } evidence ? evidence with { EstablishedAtUtc = captured } : null } };
         var definitions = LiveBankNiftyReferences.Resolve(master, date, bank.Weights);
+        var missingContext = LiveBankNiftyReferences.ContextIndexSymbols.Where(symbol => !definitions.Any(item => item.Role == HistoricalInstrumentRole.ContextIndex && item.Id == "NSE:" + symbol)).ToArray();
+        if (missingContext.Length != 0) bank = bank with { Issues = [.. bank.Issues, .. missingContext.Select(symbol => "CONTEXT_INDEX_NOT_IN_INSTRUMENT_MASTER:" + symbol)] };
         var ticks = definitions.Where(item => item.Role is HistoricalInstrumentRole.Call or HistoricalInstrumentRole.Put)
             .Select(item => item.TickSize).Distinct().ToArray();
         if (ticks.Length != 1 || ticks[0] is not > 0) throw new InvalidDataException("UNSUPPORTED_OPTION_TICK_UNIVERSE");
