@@ -94,6 +94,17 @@ and no strategy entry can form; that is the honest outcome, not a fault to work 
 If the frozen build misbehaves: stop it, check out the previous commit, `publish-live.ps1`, restart. Do not run Live and Full on the same data
 directory at the same time.
 
+## Research data capture (from 2 November 2026)
+
+- The live run now also subscribes **INDIA VIX** and **NIFTY 50** (`ContextIndex`, research only: no gate reads them; a missing row is skipped and
+  shows up as `CONTEXT_INDEX_NOT_IN_INSTRUMENT_MASTER:<symbol>` in the run's issues) and decodes total buy/sell quantity, open interest with its day
+  range, and day open/previous close. Recorded packets already held these fields; days before this change can be re-decoded with
+  `python -I scripts/research/extract_features.py <market-day.sqlite> <out.sqlite>`.
+- The Research instance (`start-research.ps1`) archives the day's Bank Nifty option minute candles with open interest automatically after 15:50 IST
+  (retrying every 15 minutes until 20:00) if it is running and the Kite token is valid: `GET /api/research/archive/status`, or trigger it with
+  `POST /api/research/archive/options`. Keep the Research instance running through the evening, or start it before 20:00.
+- Index history and the pre-registered tests: [25 research protocol](25-RESEARCH-PROTOCOL.md).
+
 ## Open decisions
 
 1. **Futures freshness gate: decided, option (a), implemented under session policy v2.** The futures quote is fresh by its exchange and
