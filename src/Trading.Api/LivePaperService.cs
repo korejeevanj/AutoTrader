@@ -22,7 +22,11 @@ public sealed class LivePaperOptions
     public string FeeConfiguration { get; set; } = "../Trading.Replay/replay.example.json";
     // No message of any kind for this long inside the session forces a reconnect. Zero disables it.
     public double FeedWatchdogSeconds { get; set; } = 5;
+    // Research instance: reads recordings and runs what-if replays but never starts, controls or archives the live run.
+    public bool ReadOnly { get; set; }
 }
+public sealed record ReadinessCheck(string Code, bool Ok, string Detail);
+public sealed record LiveReadiness(string Phase, string Severity, bool Ready, IReadOnlyList<ReadinessCheck> Checks, DateTimeOffset AsOfUtc);
 public sealed record LivePaperView(string Mode, string Status, string? ErrorCode, string CredentialStatus,
     string? RunId, DateOnly? TradingDate, DateTimeOffset? AsOfUtc, bool Connected, bool AutoEnabled,
     bool RecordingHealthy, bool RecordingIncomplete, long ReceivedSequence, long DurableSequence,
@@ -32,10 +36,12 @@ public sealed record LivePaperView(string Mode, string Status, string? ErrorCode
     QuotePaperState? Paper, decimal? SessionNet, PositionDecision? PositionDecision, IReadOnlyList<GateResult> ContextGates,
     DirectionalEvidence? Directional, bool PaperPersistenceHealthy, bool PaperPersistencePending,
     long MarketRecordingBytes, long FreeDiskBytes, double RecordedMessagesPerSecond, string? ArchiveError,
-    string? LastDisconnectReason = null, double? LastReconnectSeconds = null, int WatchdogReconnects = 0);
+    string? LastDisconnectReason = null, double? LastReconnectSeconds = null, int WatchdogReconnects = 0,
+    double ApplyMaxMilliseconds = 0, double ApplyAverageMilliseconds = 0, int ApplySlowCount = 0, double TimerSlipMaxMilliseconds = 0,
+    string? ReadinessAlert = null);
 public sealed record LiveQuoteFreshness(long InstrumentToken, string State, decimal? QuoteAgeSeconds,
     decimal? ReceiptAgeSeconds, decimal? LastTradeAgeSeconds);
-public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false);
+public sealed record QuoteReplayRequest(string SourceRunId, string? EngineJson = null, bool AssumeAutoArmed = false, bool SessionPolicyV2 = false);
 public sealed record QuoteReplayResult(string Id, string SourceRunId, string Mode, string SourceCodeVersion,
     string ReplayCodeVersion, string ConfigurationHash, QuoteSessionCheckpoint Result, IReadOnlyList<string> Limitations);
 
@@ -77,6 +83,16 @@ public sealed class LivePaperService : BackgroundService
     private double? lastReconnectSeconds;
     private int watchdogReconnects;
     private bool awaitingFirstPacket;
+    // Rolling one-minute timing of the work done under the gate, so contention is measured rather than inferred.
+    private sealed record TimingWindow(double ApplyMax, double ApplyAverage, int Slow, double TimerSlipMax);
+    private TimingWindow reported = new(0, 0, 0, 0);
+    private DateTimeOffset timingWindowStart;
+    private double applyMaxMs, applyTotalMs, timerSlipMaxMs;
+    private int applyCount, applySlow;
+    private long lastTickStamp;
+    private static readonly double SlowApplyMilliseconds = 25;
+    private string? readinessAlert;
+    private DateTimeOffset lastReadinessCheckAt, lastReadinessLogAt;
     private DateOnly? archiveAttemptedOn;
     private sealed record StorageSample(long MarketBytes, long FreeBytes, double MessagesPerSecond);
     private StorageSample storageSample = new(0, 0, 0);
@@ -124,7 +140,8 @@ public sealed class LivePaperService : BackgroundService
             session?.ContextGates ?? [], session?.Directional, paperWriter?.Healthy == true, !lastCommit.IsCompleted,
             storage.MarketBytes, storage.FreeBytes, storage.MessagesPerSecond,
             archiveError ?? (markets.Faults.Count != 0 ? "MARKET_FILE_UNREADABLE" : null),
-            lastDisconnectReason, lastReconnectSeconds, watchdogReconnects);
+            lastDisconnectReason, lastReconnectSeconds, watchdogReconnects,
+            reported.ApplyMax, reported.ApplyAverage, reported.Slow, reported.TimerSlipMax, readinessAlert);
         }
     }
 
@@ -201,6 +218,7 @@ public sealed class LivePaperService : BackgroundService
 
     public async Task CommandAsync(QuoteControl command, CancellationToken token = default)
     {
+        if (options.ReadOnly) throw new InvalidOperationException("LIVE_FEED_RUNS_IN_THE_LIVE_INSTANCE");
         if (command.Command == "stop") { await StopRecordingAsync(token); return; }
         Task commit;
         lock (gate)
@@ -236,7 +254,7 @@ public sealed class LivePaperService : BackgroundService
                     lock (gate)
                     {
                         session = new(manifest, checkpoint, CodeVersion);
-                        acknowledged = checkpoint; paperWriter = new(paperStore);
+                        acknowledged = checkpoint; paperWriter = new(paperStore, DecisionsFor(manifest.TradingDate));
                         marketStore = markets.StoreOf(previous.Id);
                         session.RecoverTail(marketStore.Read(previous.Id));
                         sequence = Math.Max(previous.LastSequence, marketStore.Runs().Single(run => run.Id == previous.Id).LastSequence);
@@ -251,11 +269,16 @@ public sealed class LivePaperService : BackgroundService
             }
             if (options.ConnectOnStartup && session is null) await CommandAsync(new("start", "startup"), stoppingToken);
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250), clock);
+            lastTickStamp = clock.GetTimestamp();
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
                 lock (gate)
                 {
-                    ArchiveWhenIdle(clock.GetUtcNow());
+                    var tickNow = clock.GetUtcNow();
+                    RecordTiming(tickNow, 0, Math.Max(0, clock.GetElapsedTime(lastTickStamp).TotalMilliseconds - 250));
+                    lastTickStamp = clock.GetTimestamp();
+                    CheckReadiness(tickNow);
+                    ArchiveWhenIdle(tickNow);
                     if (session is not null && recorder is not null && status is not ("StorageFault" or "RollingOver" or "Stopping"))
                     {
                         if (NeedsNewReferences()) connectionLifetime?.Cancel();
@@ -290,19 +313,26 @@ public sealed class LivePaperService : BackgroundService
             session.Degrade("RECORDER_CAPACITY_EXCEEDED");
             item = item with { Admission = item.Admission! with { RecordingHealthy = false } };
         }
+        var applyStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         try { session.Apply(item); }
         finally
         {
-            var decisions = kind is "Health" or "Control" || !ReferenceEquals(before, session.Paper)
-                ? JsonSerializer.Serialize(new { sequence = session.LastSequence, timeUtc = session.CurrentTimeUtc,
-                    codeVersion = session.ExecutingCodeVersion, candidates = session.Candidates, context = session.ContextGates,
-                    position = session.LastPositionDecision }, QuoteTradingSession.Json) : null;
+            RecordTiming(now, System.Diagnostics.Stopwatch.GetElapsedTime(applyStarted).TotalMilliseconds, 0);
+            // Immutable snapshots only: the paper writer serializes them on its own thread, off the feed/protection lock.
+            Func<string>? decisions = null;
+            if (kind is "Health" or "Control" || !ReferenceEquals(before, session.Paper))
+            {
+                var (decisionSequence, decisionTime, code, candidates, context, position) = (session.LastSequence, session.CurrentTimeUtc,
+                    session.ExecutingCodeVersion, session.Candidates, session.ContextGates, session.LastPositionDecision);
+                decisions = () => JsonSerializer.Serialize(new { sequence = decisionSequence, timeUtc = decisionTime, codeVersion = code,
+                    candidates, context, position }, QuoteTradingSession.Json);
+            }
             if (!ReferenceEquals(before, session.Paper) || kind is "Control" or "Recovered" || now - lastCheckpoint >= TimeSpan.FromSeconds(1))
             {
                 var checkpoint = session.Checkpoint();
                 var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 lastCommit = completed.Task;
-                if (paperWriter?.TrySave(session.Manifest.Id, session.LastSequence, JsonSerializer.Serialize(checkpoint, QuoteTradingSession.Json), () =>
+                if (paperWriter?.TrySave(session.Manifest.Id, session.LastSequence, () => JsonSerializer.Serialize(checkpoint, QuoteTradingSession.Json), () =>
                 {
                     Volatile.Write(ref acknowledged, checkpoint); completed.TrySetResult();
                 }, decisions) != true) { session.Degrade("PAPER_CHECKPOINT_CAPACITY_EXCEEDED"); completed.TrySetException(new InvalidOperationException("PAPER_CHECKPOINT_CAPACITY_EXCEEDED")); }
@@ -311,6 +341,26 @@ public sealed class LivePaperService : BackgroundService
             else if (decisions is not null && paperWriter?.TryDecision(session.Manifest.Id, session.LastSequence, decisions) != true)
                 session.Degrade("PAPER_CHECKPOINT_CAPACITY_EXCEEDED");
         }
+    }
+
+    // A completed MANUAL_TEST lifecycle on an earlier run of the same code build and engine configuration shows the intent -> fill -> exit
+    // plumbing already works, so paper-auto may be armed without repeating it. Frozen into the new run's manifest for replay.
+    private string? FindManualWaiver(string engineJson)
+    {
+        try
+        {
+            var engineKey = QuoteTradingSession.Key(engineJson);
+            foreach (var run in paperStore.Runs())
+            {
+                if (run.CheckpointJson is null) continue;
+                var manifest = JsonSerializer.Deserialize<QuoteRunManifest>(run.ManifestJson, QuoteTradingSession.Json)!;
+                if (manifest.Index.IsSynthetic || manifest.CodeVersion != CodeVersion || QuoteTradingSession.Key(manifest.EngineJson) != engineKey) continue;
+                var checkpoint = JsonSerializer.Deserialize<QuoteSessionCheckpoint>(run.CheckpointJson, QuoteTradingSession.Json)!;
+                if (checkpoint.Paper.Trades.Any(trade => trade.Origin == "MANUAL_TEST")) return run.Id;
+            }
+        }
+        catch (Exception error) when (error is IOException or Microsoft.Data.Sqlite.SqliteException or JsonException or InvalidDataException) { }
+        return null;
     }
 
     private async Task PrepareAsync(CancellationToken token)
@@ -337,14 +387,17 @@ public sealed class LivePaperService : BackgroundService
             var id = "live-" + date.ToString("yyyyMMdd") + "-" + Guid.NewGuid().ToString("N");
             var index = new IndexDefinition("BANKNIFTY", "Bank Nifty", "NSE", "Asia/Kolkata", "Banks",
                 "KITE:" + master.Sha256, captured, null, false, new(true, true, true));
-            var manifest = new QuoteRunManifest(id, date, captured, index, definitions, bank.Weights, settings.ToJson(), fees, CodeVersion, bank.Issues);
+            var waiver = await Task.Run(() => FindManualWaiver(settings.ToJson()), token);
+            var manifest = new QuoteRunManifest(id, date, captured, index, definitions, bank.Weights, settings.ToJson(), fees, CodeVersion,
+                waiver is null ? bank.Issues : [.. bank.Issues, "MANUAL_LIFECYCLE_WAIVED_PRIOR_RUN_SAME_BUILD:" + waiver],
+                QuoteTradingSession.PolicyV2, waiver);
             var json = JsonSerializer.Serialize(manifest, QuoteTradingSession.Json);
             lock (gate)
             {
                 marketStore = markets.ForDate(date);
                 marketStore.Create(id, captured, json); paperStore.Create(id, captured, json);
                 session = new(manifest, executingCodeVersion: CodeVersion); sequence = 0; recorder = new(marketStore, clock);
-                paperWriter = new(paperStore); acknowledged = null; lastCheckpoint = default;
+                paperWriter = new(paperStore, DecisionsFor(date)); acknowledged = null; lastCheckpoint = default;
                 PublishLocked("InstrumentMaster", raw);
                 PublishLocked("MembershipReference", bank.MembershipCsv);
                 PublishLocked("WeightArchive", bank.WeightArchive);
@@ -462,7 +515,20 @@ public sealed class LivePaperService : BackgroundService
     public IReadOnlyList<object> Runs() => markets.Runs().Select(run => (object)new { run.Id, run.CreatedAtUtc, run.LastSequence, run.Closed,
             engineJson = JsonSerializer.Deserialize<QuoteRunManifest>(run.ManifestJson, QuoteTradingSession.Json)!.EngineJson }).ToArray();
 
-    public IReadOnlyList<JsonElement> Decisions(string id, long after, int limit) => paperStore.Decisions(id, after, limit);
+    // Decision rows live in one file per trading date beside the market file; earlier runs kept them in paper.sqlite.
+    private string DecisionFile(DateOnly date) => Path.Combine(root, $"decisions-{date:yyyy-MM-dd}.sqlite");
+    private SqliteQuoteStore DecisionsFor(DateOnly date) => new(DecisionFile(date));
+
+    public IReadOnlyList<JsonElement> Decisions(string id, long after, int limit)
+    {
+        if (id.StartsWith("live-", StringComparison.Ordinal) && id.Length > 13
+            && DateOnly.TryParseExact(id.AsSpan(5, 8), "yyyyMMdd", out var date) && File.Exists(DecisionFile(date)))
+        {
+            var rows = DecisionsFor(date).Decisions(id, after, limit);
+            if (rows.Count != 0) return rows;
+        }
+        return paperStore.Decisions(id, after, limit);
+    }
 
     public QuoteReplayResult Rehearse()
     {
@@ -481,6 +547,7 @@ public sealed class LivePaperService : BackgroundService
         var source = markets.Runs().SingleOrDefault(item => item.Id == request.SourceRunId) ?? throw new InvalidOperationException("RECORDING_NOT_FOUND");
         var manifest = JsonSerializer.Deserialize<QuoteRunManifest>(source.ManifestJson, QuoteTradingSession.Json)!;
         var originalCode = manifest.CodeVersion;
+        if (request.SessionPolicyV2) manifest = manifest with { SessionPolicy = QuoteTradingSession.PolicyV2, ManualLifecycleWaiver = "what-if" };
         if (request.EngineJson is not null)
         {
             var changed = EngineConfiguration.FromJson(request.EngineJson);
@@ -511,7 +578,8 @@ public sealed class LivePaperService : BackgroundService
                 .. (!source.Closed ? new[] { "RECORDING_STILL_OPEN_REPLAY_USES_COMMITTED_PREFIX" } : Array.Empty<string>()),
                 .. (request.EngineJson is not null ? new[] { "COUNTERFACTUAL_PAPER_DURABILITY_TIMING_NOT_OBSERVED" } : Array.Empty<string>()),
                 .. (runner.RecordingIncomplete || runner.OverriddenRecordingGaps ? new[] { "SOURCE_RECORDING_HAS_GAPS_OR_RECOVERY" } : Array.Empty<string>()),
-                .. (request.AssumeAutoArmed ? new[] { "WHAT_IF_AUTO_ARMED_FROM_START", "WHAT_IF_RECORDER_HEALTH_IGNORED" } : Array.Empty<string>())]);
+                .. (request.AssumeAutoArmed ? new[] { "WHAT_IF_AUTO_ARMED_FROM_START", "WHAT_IF_RECORDER_HEALTH_IGNORED" } : Array.Empty<string>()),
+                .. (request.SessionPolicyV2 ? new[] { "WHAT_IF_SESSION_POLICY_V2_APPLIED_TO_RECORDED_EVENTS" } : Array.Empty<string>())]);
         var json = JsonSerializer.Serialize(result, QuoteTradingSession.Json);
         replayStore.Create(result.Id, clock.GetUtcNow(), JsonSerializer.Serialize(manifest, QuoteTradingSession.Json));
         replayStore.Checkpoint(result.Id, runner.LastSequence, json, true);
@@ -552,6 +620,73 @@ public sealed class LivePaperService : BackgroundService
             TimeSpan.FromSeconds(options.FeedWatchdogSeconds))) return;
         watchdogFired = true; watchdogReconnects++;
         connectionLifetime.Cancel();
+    }
+
+    private void RecordTiming(DateTimeOffset now, double applyMilliseconds, double timerSlipMilliseconds)
+    {
+        if (timingWindowStart == default) timingWindowStart = now;
+        if (applyMilliseconds > 0)
+        {
+            applyCount++; applyTotalMs += applyMilliseconds; applyMaxMs = Math.Max(applyMaxMs, applyMilliseconds);
+            if (applyMilliseconds >= SlowApplyMilliseconds) applySlow++;
+        }
+        timerSlipMaxMs = Math.Max(timerSlipMaxMs, timerSlipMilliseconds);
+        if (now - timingWindowStart < TimeSpan.FromMinutes(1)) return;
+        reported = new(applyMaxMs, applyCount == 0 ? 0 : applyTotalMs / applyCount, applySlow, timerSlipMaxMs);
+        timingWindowStart = now; applyMaxMs = applyTotalMs = timerSlipMaxMs = 0; applyCount = applySlow = 0;
+    }
+
+    public LiveReadiness Readiness() { lock (gate) return ReadinessLocked(clock.GetUtcNow()); }
+
+    // Pre-open checklist, evaluated from live state only; nothing here connects or changes anything.
+    private LiveReadiness ReadinessLocked(DateTimeOffset now)
+    {
+        var local = IstTime(now); var date = DateOnly.FromDateTime(local); var time = local.TimeOfDay;
+        var weekday = date.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday);
+        var open = new TimeSpan(9, 15, 0);
+        var checks = new List<ReadinessCheck>();
+        void Check(string code, bool ok, string detail) => checks.Add(new(code, ok, detail));
+        var credential = kite.CredentialStatus;
+        Check("KITE_TOKEN", credential is not ("Missing" or "AuthenticationRequired"), credential);
+        Check("LIVE_RUN_PREPARED", session is not null && session.Manifest.TradingDate == date, session is null ? status : status + " " + session.Manifest.TradingDate);
+        Check("REFERENCES_VERIFIED", session?.Manifest.Weights is { Verified: true }, session is null ? "no run" : string.Join(" ", session.Manifest.ReferenceIssues.DefaultIfEmpty("none")));
+        Check("FEED_CONNECTED", session?.FeedConnected == true && status == "Connected", status + (errorCode is null ? "" : " " + errorCode));
+        var quote = Freshness().FirstOrDefault(item => session is not null && item.InstrumentToken == session.Future.InstrumentToken);
+        Check("QUOTES_FRESH", time < open || quote?.State == "fresh", time < open ? "not required before the open" : quote?.State ?? "no futures quote");
+        Check("UNIVERSE_SELECTED", time < open + TimeSpan.FromMinutes(1) || session?.Universe.Count > 0, (session?.Universe.Count ?? 0) + " options");
+        Check("RECORDER_HEALTHY", recorder?.Healthy == true && session?.RecorderHealthy == true, recorder?.Failure ?? "lag " + (recorder?.LagMilliseconds ?? 0).ToString("0") + " ms");
+        Check("PAPER_PERSISTENCE_HEALTHY", paperWriter?.Healthy == true, paperWriter?.Failure ?? "queue " + (paperWriter?.Pending ?? 0));
+        var free = Storage().FreeBytes;
+        Check("DISK_OK", free >= LowDiskBytes, (free / (1024 * 1024)) + " MB free");
+        Check("MANUAL_LIFECYCLE_OR_WAIVER", session?.Paper.Trades.Any(trade => trade.Origin == "MANUAL_TEST") == true || session?.Manifest.ManualLifecycleWaiver is not null,
+            session?.Manifest.ManualLifecycleWaiver is { } waiver ? "waived: " + waiver : "manual lifecycle " + (session?.Paper.Trades.Any(trade => trade.Origin == "MANUAL_TEST") == true ? "done" : "not done"));
+        Check("AUTO_ARMED", session?.AutoEnabled == true && acknowledged?.AutoEnabled == true, session?.AutoEnabled == true ? "armed" : "paused");
+        Check("FEED_WATCHDOG_ENABLED", options.FeedWatchdogSeconds > 0, options.FeedWatchdogSeconds + " s");
+        var phase = !weekday ? "WEEKEND" : time < new TimeSpan(8, 30, 0) ? "PRE_REFERENCE" : time < open ? "PRE_OPEN" : time < new TimeSpan(9, 30, 0) ? "OPENING_RANGE"
+            : time < new TimeSpan(11, 30, 0) ? "ENTRY_WINDOW" : time < new TimeSpan(15, 30, 0) ? "SESSION" : "CLOSED";
+        var ready = checks.All(check => check.Ok);
+        var severity = ready ? "OK" : phase is "WEEKEND" or "CLOSED" or "PRE_REFERENCE" || time < new TimeSpan(8, 45, 0) ? "INFO"
+            : time < new TimeSpan(9, 10, 0) ? "WARNING" : "CRITICAL";
+        return new(phase, severity, ready, checks, now);
+    }
+
+    // From 08:45 to 09:35 IST, once a second: a failing checklist becomes a status alert, a stderr line and a log file entry every minute.
+    private void CheckReadiness(DateTimeOffset now)
+    {
+        if (options.ReadOnly || now - lastReadinessCheckAt < TimeSpan.FromSeconds(1)) return;
+        lastReadinessCheckAt = now;
+        var local = IstTime(now);
+        if (local.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday || local.TimeOfDay < new TimeSpan(8, 45, 0) || local.TimeOfDay > new TimeSpan(9, 35, 0))
+        { readinessAlert = null; return; }
+        var readiness = ReadinessLocked(now);
+        var failing = readiness.Checks.Where(check => !check.Ok).Select(check => check.Code + " (" + check.Detail + ")").ToArray();
+        readinessAlert = readiness.Severity is "WARNING" or "CRITICAL" ? string.Join("; ", failing) : null;
+        if (readinessAlert is null || now - lastReadinessLogAt < TimeSpan.FromMinutes(1)) return;
+        lastReadinessLogAt = now;
+        var line = $"{now:O} [live] NOT READY ({readiness.Severity}, {readiness.Phase}): {readinessAlert}";
+        Console.Error.WriteLine(line);
+        var file = Path.Combine(root, $"readiness-{DateOnly.FromDateTime(local):yyyy-MM-dd}.log");
+        _ = Task.Run(() => { try { File.AppendAllText(file, line + Environment.NewLine); } catch (IOException) { } catch (UnauthorizedAccessException) { } });
     }
 
     private bool NeedsNewReferences()
@@ -602,6 +737,9 @@ public static class LivePaperRoutes
         }).WithName("LivePaperCommand").Produces<LivePaperView>().ProducesProblem(409).ProducesProblem(400).ProducesProblem(415).ProducesProblem(500).ProducesProblem(503)
             .WithSummary("Start or stop recording, pause/arm auto, manual-test entry or request local paper exit.")
             .WithDescription("Commands: start, stop, pause, arm, manual, exit. Stop is refused while a paper position is open; it closes the run so start begins a new one. Stable requestId and server-resolved frozen-universe contractId make manual requests idempotent. No real order transport.");
+        group.MapGet("/readiness", (LivePaperService service) => Results.Json(service.Readiness())).Produces<LiveReadiness>().WithName("LivePaperReadiness")
+            .WithSummary("Pre-open checklist: token, run, references, feed, quotes, recorder, disk, manual lifecycle (or waiver) and auto arming.")
+            .WithDescription("Read-only. Severity is INFO until 08:45 IST, WARNING until 09:10 and CRITICAL after, and the same alert is shown in /status, stderr and readiness-DATE.log.");
         group.MapGet("/recordings", (LivePaperService service) => service.Runs()).WithName("LiveRecordings")
             .WithSummary("List local recorded quote sessions.").WithDescription("Run IDs select server-managed immutable source evidence, never client filesystem paths.").ProducesProblem(500);
         group.MapGet("/recordings/{id}/decisions", (string id, long? after, int? limit, LivePaperService service) =>

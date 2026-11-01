@@ -21,6 +21,8 @@ interface LiveView {
   paper: Paper | null; sessionNet: number | null; positionDecision: { action: string | number; netLiquidationPnl: number | null; reasonCodes: string[] } | null;
   paperPersistenceHealthy: boolean; paperPersistencePending: boolean;
   marketRecordingBytes: number; freeDiskBytes: number; recordedMessagesPerSecond: number; archiveError: string | null;
+  lastDisconnectReason?: string | null; lastReconnectSeconds?: number | null; watchdogReconnects?: number;
+  applyMaxMilliseconds?: number; applyAverageMilliseconds?: number; applySlowCount?: number; timerSlipMaxMilliseconds?: number; readinessAlert?: string | null;
   quoteFreshness: { instrumentToken: number; state: string; quoteAgeSeconds: number | null; receiptAgeSeconds: number | null; lastTradeAgeSeconds: number | null }[];
   contextGates: Gate[];
   directional: { status: string | number; openingHigh: number | null; openingLow: number | null; vwap: number | null; aboveWeightPercent: number | null; belowWeightPercent: number | null; missingWeightPercent: number | null;
@@ -107,6 +109,7 @@ export function LivePaper() {
       <p className="helper">Recording and protection run on the server independently of this page. A connection heartbeat is not quote freshness. Closed-session or stale observations are not live prices.</p>
       {error && <p role="alert" className="error">Workspace unavailable: {error}. Trading state is unknown until connection recovers.</p>}
       {commandError && <p role="alert" className="error">{commandError}</p>}
+      {view?.readinessAlert && <p role="alert" className="error"><strong>NOT READY FOR THE OPEN:</strong> {view.readinessAlert}</p>}
       {view && <>
         <p role="status"><strong>{view.status}</strong> · Feed {view.connected ? 'connected' : 'disconnected'} · Paper-auto {view.autoEnabled ? 'enabled' : 'paused'} · Recording {view.recordingHealthy ? 'healthy' : 'not ready'}</p>
         <p>Credentials: {view.credentialStatus} · {view.errorCode ?? 'No provider error reported'}</p>
@@ -114,6 +117,7 @@ export function LivePaper() {
         {view.runId && <p><a href={`/api/live/recordings/${encodeURIComponent(view.runId)}/decisions`} target="_blank" rel="noreferrer">Read committed decision history (paged JSON)</a></p>}
         <p>Received sequence {view.receivedSequence} · Committed {view.durableSequence} · Queue {view.recorderQueueDepth} · Lag {num(view.recorderLagMilliseconds)} ms</p>
         <p>Recording file {mb(view.marketRecordingBytes)} MB · {num(view.recordedMessagesPerSecond)} msg/s · Free disk {mb(view.freeDiskBytes)} MB{view.archiveError ? ` · storage fault ${view.archiveError}` : ''}</p>
+        <p>Feed watchdog reconnects {view.watchdogReconnects ?? 0} · last disconnect {view.lastDisconnectReason ?? 'none'}{view.lastReconnectSeconds != null ? ` · reconnect took ${num(view.lastReconnectSeconds)} s` : ''} · session step max {num(view.applyMaxMilliseconds ?? 0)} ms (avg {num(view.applyAverageMilliseconds ?? 0)}, {view.applySlowCount ?? 0} slow) · timer slip max {num(view.timerSlipMaxMilliseconds ?? 0)} ms</p>
         <p>Paper persistence {view.paperPersistenceHealthy ? 'healthy' : 'not ready'}{view.paperPersistencePending ? ' · acknowledgement pending; the account below shows committed state only' : ''}</p>
         {view.recordingIncomplete && <p className="error">Recording contains a gap or possible crash-tail loss. Replay must retain this limitation.</p>}
         <p className="helper">{view.issues.join(' · ') || 'No reference/recovery issues reported.'}</p>

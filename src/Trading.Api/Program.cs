@@ -23,8 +23,15 @@ if (args.Length > 0)
     builder.Configuration.AddCommandLine(args);
 }
 
+// Full (default) runs everything. Live runs only the live feed/recorder/paper path. Research runs the cockpit, historical replay and
+// read-only recording access, and never starts, controls or archives the live run. Run Live and Research as two processes.
+var mode = builder.Configuration["AutoTrader:Mode"] ?? "Full";
+if (mode is not ("Full" or "Live" or "Research")) throw new InvalidOperationException("AutoTrader:Mode must be Full, Live or Research.");
+var runLive = mode != "Research"; var runResearch = mode != "Live";
+Console.WriteLine($"[autotrader] mode={mode}");
+
 builder.Services.AddSignalR();
-builder.Services.AddOpenApi(options =>
+if (runResearch) builder.Services.AddOpenApi(options =>
 {
     options.AddSchemaTransformer<SyntheticApiSchemaTransformer>();
     options.AddOperationTransformer((operation, context, cancellationToken) =>
@@ -44,19 +51,22 @@ builder.Services.AddOpenApi(options =>
         return Task.CompletedTask;
     });
 });
-builder.Services.Configure<SyntheticDashboardOptions>(builder.Configuration.GetSection("SyntheticDashboard"));
-builder.Services.AddSingleton<SyntheticIndexCatalog>();
-builder.Services.AddSingleton<IIndexCatalog>(services => services.GetRequiredService<SyntheticIndexCatalog>());
-builder.Services.AddSingleton<IDashboardSnapshots, SyntheticDashboardSnapshots>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
-builder.Services.Configure<JournalStorageOptions>(builder.Configuration.GetSection("Storage"));
-builder.Services.AddSingleton<IJournalStore>(services =>
+if (runResearch)
 {
-    var settings = services.GetRequiredService<IOptions<JournalStorageOptions>>().Value;
-    var environment = services.GetRequiredService<IHostEnvironment>();
-    return new SqliteJournalStore(Path.GetFullPath(settings.SqliteJournalPath, environment.ContentRootPath));
-});
-builder.Services.AddSingleton<SyntheticPlanJournal>();
+    builder.Services.Configure<SyntheticDashboardOptions>(builder.Configuration.GetSection("SyntheticDashboard"));
+    builder.Services.AddSingleton<SyntheticIndexCatalog>();
+    builder.Services.AddSingleton<IIndexCatalog>(services => services.GetRequiredService<SyntheticIndexCatalog>());
+    builder.Services.AddSingleton<IDashboardSnapshots, SyntheticDashboardSnapshots>();
+    builder.Services.Configure<JournalStorageOptions>(builder.Configuration.GetSection("Storage"));
+    builder.Services.AddSingleton<IJournalStore>(services =>
+    {
+        var settings = services.GetRequiredService<IOptions<JournalStorageOptions>>().Value;
+        var environment = services.GetRequiredService<IHostEnvironment>();
+        return new SqliteJournalStore(Path.GetFullPath(settings.SqliteJournalPath, environment.ContentRootPath));
+    });
+    builder.Services.AddSingleton<SyntheticPlanJournal>();
+}
 builder.Services.Configure<HistoricalReplayOptions>(builder.Configuration.GetSection("HistoricalReplay"));
 builder.Services.AddKiteCredentialFile(builder.Environment.ContentRootPath);
 builder.Services.AddHttpClient("KiteHistorical", client => client.Timeout = TimeSpan.FromSeconds(30))
@@ -72,7 +82,7 @@ builder.Services.AddSingleton<KiteHistoricalClient>(services =>
         () => { var current = credentials.CurrentValue; return new(current.ApiKey, current.AccessToken); }, services.GetRequiredService<TimeProvider>(),
         TimeSpan.FromMilliseconds(options.MinimumRequestSpacingMilliseconds), options.MaximumProviderAttempts);
 });
-builder.Services.AddSingleton<HistoricalReplayService>();
+if (runResearch) builder.Services.AddSingleton<HistoricalReplayService>();
 builder.Services.AddHttpClient("NseHistoricalContracts", client => client.Timeout = TimeSpan.FromSeconds(30))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false,
         AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate });
@@ -80,10 +90,11 @@ builder.Services.AddSingleton(services => new NseHistoricalContractClient(
     services.GetRequiredService<IHttpClientFactory>().CreateClient("NseHistoricalContracts"), services.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(services => new PublishedBankInputsClient(
     services.GetRequiredService<IHttpClientFactory>().CreateClient("NseHistoricalContracts"), services.GetRequiredService<TimeProvider>()));
-builder.Services.AddHostedService(services => services.GetRequiredService<HistoricalReplayService>());
+if (runResearch) builder.Services.AddHostedService(services => services.GetRequiredService<HistoricalReplayService>());
 builder.Services.Configure<LivePaperOptions>(builder.Configuration.GetSection("LivePaper"));
+if (!runLive) builder.Services.PostConfigure<LivePaperOptions>(options => options.ReadOnly = true);
 builder.Services.AddSingleton<LivePaperService>();
-builder.Services.AddHostedService(services => services.GetRequiredService<LivePaperService>());
+if (runLive) builder.Services.AddHostedService(services => services.GetRequiredService<LivePaperService>());
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<RequestBodyExceptionHandler>();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
@@ -99,10 +110,9 @@ var app = builder.Build();
 app.UseExceptionHandler();
 
 app.MapHub<DashboardHub>("/hubs/dashboard");
-app.MapSyntheticRestEndpoints();
-app.MapHistoricalReplay();
+if (runResearch) { app.MapSyntheticRestEndpoints(); app.MapHistoricalReplay(); }
 app.MapLivePaper();
-if (app.Environment.IsDevelopment())
+if (runResearch && app.Environment.IsDevelopment())
 {
     app.MapOpenApi("/openapi/{documentName}.json");
     app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "AutoTrader synthetic cockpit v1"));

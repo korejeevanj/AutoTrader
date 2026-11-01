@@ -14,17 +14,45 @@ public sealed class SqliteQuoteStore(string path)
     private string ConnectionString => new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 5 }.ToString();
 
     // Closes this file's pooled handles so it can be copied, archived or deleted (Windows refuses otherwise).
-    public void ReleasePool() { using var connection = new SqliteConnection(ConnectionString); SqliteConnection.ClearPool(connection); }
+    public void ReleasePool()
+    {
+        using var connection = new SqliteConnection(ConnectionString); SqliteConnection.ClearPool(connection);
+        using var reader = new SqliteConnection(ReadOnlyConnectionString); SqliteConnection.ClearPool(reader);
+    }
 
-    private SqliteConnection Open()
+    private string ReadOnlyConnectionString => new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 5, Mode = SqliteOpenMode.ReadOnly }.ToString();
+
+    // Readers never write: a read-only handle cannot take the writer lock, so research reads of a live day file cannot stall the recorder.
+    // A file that still lacks a table or the admission column is opened normally once, so it gets created or migrated.
+    private SqliteConnection OpenReadOnly()
+    {
+        if (File.Exists(path))
+        {
+            var reader = new SqliteConnection(ReadOnlyConnectionString);
+            try
+            {
+                reader.Open();
+                using var check = reader.CreateCommand();
+                check.CommandText = "SELECT (SELECT count(*) FROM sqlite_master WHERE name IN ('quote_runs','market_events','quote_decisions')),"
+                    + " (SELECT count(*) FROM pragma_table_info('market_events') WHERE name='admission')";
+                using var result = check.ExecuteReader();
+                if (result.Read() && result.GetInt64(0) == 3 && result.GetInt64(1) == 1) return reader;
+            }
+            catch (SqliteException) { }
+            reader.Dispose();
+        }
+        return Open();
+    }
+
+    private SqliteConnection Open(bool durable = true)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var connection = new SqliteConnection(ConnectionString);
         connection.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=FULL;
+            PRAGMA synchronous={(durable ? "FULL" : "NORMAL")};
             CREATE TABLE IF NOT EXISTS quote_runs(id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
               manifest TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0, last_sequence INTEGER NOT NULL DEFAULT 0, checkpoint TEXT);
             CREATE TABLE IF NOT EXISTS market_events(run_id TEXT NOT NULL, sequence INTEGER NOT NULL,
@@ -59,6 +87,22 @@ public sealed class SqliteQuoteStore(string path)
     // One long-lived writer connection for the recorder: reopening per batch lets SQLite checkpoint and reset the WAL whenever the
     // last connection closes, which measured as commit stalls of hundreds of milliseconds.
     public QuoteAppender OpenAppender() => new(Open());
+
+    // One long-lived connection for the paper writer: checkpoints and decision rows share it instead of reopening per write.
+    // Decision rows are diagnostic evidence, so their file may use synchronous=NORMAL (no fsync per commit; a power cut can lose only the newest rows).
+    public QuoteWriter OpenWriter(bool durable = true) => new(Open(durable));
+
+    public sealed class QuoteWriter(SqliteConnection connection) : IDisposable
+    {
+        public void Checkpoint(string id, long sequence, string json, bool closed = false, string? decisions = null)
+            => CheckpointTo(connection, id, sequence, json, closed, decisions);
+        public void AppendDecision(string id, long sequence, string decisions)
+        {
+            using var transaction = connection.BeginTransaction();
+            InsertDecision(connection, transaction, id, sequence, decisions); transaction.Commit();
+        }
+        public void Dispose() => connection.Dispose();
+    }
 
     public sealed class QuoteAppender(SqliteConnection connection) : IDisposable
     {
@@ -103,7 +147,13 @@ public sealed class SqliteQuoteStore(string path)
 
     public void Checkpoint(string id, long sequence, string json, bool closed = false, string? decisions = null)
     {
-        using var connection = Open(); using var transaction = connection.BeginTransaction(); using var command = connection.CreateCommand();
+        using var connection = Open();
+        CheckpointTo(connection, id, sequence, json, closed, decisions);
+    }
+
+    private static void CheckpointTo(SqliteConnection connection, string id, long sequence, string json, bool closed, string? decisions)
+    {
+        using var transaction = connection.BeginTransaction(); using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = "UPDATE quote_runs SET checkpoint=$json,last_sequence=$seq,closed=$closed WHERE id=$id";
         command.Parameters.AddWithValue("$id", id); command.Parameters.AddWithValue("$seq", sequence);
@@ -133,7 +183,7 @@ public sealed class SqliteQuoteStore(string path)
     public IReadOnlyList<JsonElement> Decisions(string id, long after = 0, int limit = 50)
     {
         if (after < 0 || limit is < 1 or > 200) throw new ArgumentException("Decision paging requires after>=0 and limit 1–200.");
-        using var connection = Open(); using var command = connection.CreateCommand();
+        using var connection = OpenReadOnly(); using var command = connection.CreateCommand();
         command.CommandText = "SELECT payload FROM quote_decisions WHERE run_id=$run AND sequence>$after ORDER BY sequence LIMIT $limit";
         command.Parameters.AddWithValue("$run", id); command.Parameters.AddWithValue("$after", after); command.Parameters.AddWithValue("$limit", limit);
         using var reader = command.ExecuteReader(); var result = new List<JsonElement>();
@@ -151,12 +201,12 @@ public sealed class SqliteQuoteStore(string path)
     {
         using var connection = Open(); using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)"; command.ExecuteNonQuery();
-        SqliteConnection.ClearPool(connection);
+        ReleasePool();
     }
 
     public IReadOnlyList<RecordedQuoteRun> Runs()
     {
-        using var connection = Open(); using var command = connection.CreateCommand();
+        using var connection = OpenReadOnly(); using var command = connection.CreateCommand();
         command.CommandText = "SELECT id,created_at,manifest,closed,last_sequence,checkpoint FROM quote_runs ORDER BY created_at DESC";
         using var reader = command.ExecuteReader(); var result = new List<RecordedQuoteRun>();
         while (reader.Read()) result.Add(new(reader.GetString(0), DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
@@ -166,7 +216,7 @@ public sealed class SqliteQuoteStore(string path)
 
     public IEnumerable<RecordedMarketEvent> Read(string runId)
     {
-        using var connection = Open(); using var command = connection.CreateCommand();
+        using var connection = OpenReadOnly(); using var command = connection.CreateCommand();
         command.CommandText = "SELECT sequence,received_at,connection_id,kind,payload,admission FROM market_events WHERE run_id=$run ORDER BY sequence";
         command.Parameters.AddWithValue("$run", runId); using var reader = command.ExecuteReader();
         while (reader.Read()) yield return new(runId, reader.GetInt64(0), DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
