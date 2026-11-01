@@ -257,6 +257,14 @@ Code: `scripts/research/candles.py`. This is the ninth pre-registered test: |t| 
   day-clustered t >= 2.77, it is positive in at least 4 of the 6 blocks, and positive in both 2024 and 2025-26. Otherwise **KILLED**. Reported:
   direction hit rate, mean move per call, calls per day, and the same for all decision points (the model's correlation with the outcome).
 
+### Result: multi-timeframe candle model (run once, code `faa8a0d`)
+
+24,989 decision points over 1,190 sessions, 28 features from 5-, 10- and 15-minute candles of the index and all 14 banks, plus India VIX. Out of sample
+(2024 to Oct 2026, 14,679 points): correlation between prediction and the next 15-minute move **0.003**. Confident calls (top and bottom training
+deciles): 2,407 on 653 days, direction right 51.9% of the time, mean move in the call direction -1.6 points (day-clustered t +1.0, both
+indistinguishable from zero), positive in 3 of 6 blocks (+2.8, 0.0, -4.4, +3.4, -3.4, -8.6 points), against the 19 points needed. **KILLED.**
+Nine of nine pre-registered tests are now killed or non-edge.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
