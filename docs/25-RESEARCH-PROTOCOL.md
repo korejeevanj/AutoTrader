@@ -240,6 +240,23 @@ Economic test (2022 deciles applied to 2023-2026): top decile +0.9 points, botto
 needed. **KILLED.** The effect is real but about one twentieth of the cost of trading it, and gone within 15 minutes. Part of it may be mechanical
 (current weights, not point-in-time ones). Eight of eight pre-registered tests are now killed or non-edge.
 
+## Multi-timeframe candle model over the index and 14 banks (pre-registered 1 November 2026, before any result)
+
+The owner's idea: judge direction from 5-, 10- and 15-minute candles of Bank Nifty and all 14 banks together, rather than second by second.
+Code: `scripts/research/candles.py`. This is the ninth pre-registered test: |t| >= 2.77 (Bonferroni 0.05/9).
+
+- Decision points: every 15 minutes from 09:45 to 14:45 (21 a day). Outcome: the index move over the next 15 minutes, in points (non-overlapping).
+- Features (all from data up to the decision minute), for each candle length s in {5, 10, 15} minutes: index return; where the index closed inside
+  its last s-minute candle (0 = low, 1 = high); weighted bank return; bank-minus-index divergence; share of bank weight that rose; spread (weighted
+  standard deviation) of bank returns; HDFC Bank plus ICICI Bank return; bank volume in the last s minutes relative to the session's average so far.
+  Plus: the index move since the open, time of day, India VIX level and its 15-minute change. 28 features, each standardised on training data only.
+- Model: ridge regression (penalty 10 on standardised features) predicting the 15-minute move in points. Walk-forward: train on all data before
+  each 6-month block (first block 2024 H1), predict the block, repeat.
+- Decision: go long (call) when the prediction is in the top decile of the *training* predictions, long put in the bottom decile; nothing otherwise.
+- **SURVIVES only if** out of sample the mean index move in the trade direction is at least 19 points (about the round-trip option cost) with
+  day-clustered t >= 2.77, it is positive in at least 4 of the 6 blocks, and positive in both 2024 and 2025-26. Otherwise **KILLED**. Reported:
+  direction hit rate, mean move per call, calls per day, and the same for all decision points (the model's correlation with the outcome).
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
