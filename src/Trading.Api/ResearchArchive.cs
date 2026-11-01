@@ -125,7 +125,9 @@ public sealed class ResearchArchive
         var manifest = new List<object>();
         foreach (var symbol in symbols)
         {
+            // Indices live on NSE (Nifty 50, Bank Nifty, India VIX) or BSE (Sensex); NSE wins when a symbol exists on both.
             var row = master.Instruments.FirstOrDefault(item => item.Exchange == "NSE" && item.TradingSymbol == symbol)
+                ?? master.Instruments.FirstOrDefault(item => item.Exchange == "BSE" && item.TradingSymbol == symbol && item.InstrumentType == "EQ")
                 ?? throw new InvalidDataException("SYMBOL_NOT_IN_MASTER:" + symbol);
             foreach (var (start, end) in windows)
             {

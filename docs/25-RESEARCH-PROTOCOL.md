@@ -210,6 +210,28 @@ was calibrated on two days.
 
 Seven of seven pre-registered tests are now killed or non-edge (H1, H2a, H2b, H3, T1, T2, A3; T3 is a borderline drawdown reducer).
 
+### Diagnostics after A3 (1 November 2026; not tests, no rule is selected from them)
+
+Post-mortem of the 536 out-of-sample trades (`scripts/research/postmortem.py`). Entries: in the signal direction the index moved +0.2, +0.1, +1.2,
++3.2 and +1.6 points after 1, 5, 15, 30 and 60 minutes (all inside the 95% band) and moved our way 46-49% of the time, after having already moved
++113 points in the 30 minutes before the signal: the entries carried no information. Exits: 84% of trades were ahead by more than the fees at some
+point and 61% of those ended as losses, which is what a random path does. The same entries with ten other exits (trailing 8-30%, take-profit
+Rs 500/1,000/2,000, time exits of 5/15/60 minutes, hold to 15:15) all lost Rs 103-342 per trade on average while the win rate ranged from 31% to 74%:
+exits change how often you win, not whether you make money.
+
+## Bank breadth lead (pre-registered 1 November 2026, before the constituent history was fetched)
+
+The engine uses the 14 banks only as a confirmation filter; whether breadth *predicts* Bank Nifty was never tested. Data: minute candles for the 14
+current constituents and NIFTY BANK, Jan 2022 to Oct 2026, from Kite. Weights: the current published weights (HDFC Bank 18.61 ... Union Bank 2.86),
+not point-in-time, and today's membership (a survivorship approximation, stated in advance). Code: `scripts/research/breadth.py`.
+
+- Signal at minute i (09:30-15:00): divergence D = weighted 5-minute return of the 14 banks minus the index's 5-minute return (percent).
+- Outcome: the index move over the next H minutes, H in {5, 15}, in points.
+- **Test 1 (predictive):** slope of the outcome on D, sampled every H minutes (non-overlapping), t clustered by day; required t >= 2.69.
+- **Test 2 (economic):** with decile thresholds of D fixed on 2022 only, the 2023-2026 difference between the mean next-15-minute move after the top
+  decile and after the bottom decile must be at least 19 index points (about the round-trip cost of an at-the-money option at delta 0.5).
+- SURVIVES only if both hold (it would then still need an option-level test); otherwise KILLED. This is the eighth pre-registered test.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper

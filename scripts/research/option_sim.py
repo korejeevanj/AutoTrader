@@ -30,8 +30,10 @@ def fee(price, units, buy):
 
 
 class Params:
-    def __init__(self, vol_scale=1.0, expiry_days=14.0, spread_mult=1.0, stop=0.08):
+    def __init__(self, vol_scale=1.0, expiry_days=14.0, spread_mult=1.0, stop=0.08, target_rupees=None, max_minutes=None):
         self.vol_scale, self.expiry_days, self.spread_mult, self.stop = vol_scale, expiry_days, spread_mult, stop
+        # Optional exits used only by diagnostics: take profit at a rupee gain per lot, or leave after a fixed number of minutes.
+        self.target_rupees, self.max_minutes = target_rupees, max_minutes
 
 
 def quote(F, K, minutes_since_entry, vix, call, p):
@@ -61,13 +63,17 @@ def trade(day, i, direction, p):
     strike = round(day.ic[i] / 100.0) * 100.0
     t0 = day.m[i + 1]
     bid0, ask = quote(day.io[i + 1], strike, 0, day.vo[i + 1], call, p)
-    peak = ask; exit_at = None; reason = "SESSION"
+    peak = ask; trough = ask; best_bid = 0.0; exit_at = None; reason = "SESSION"
     last_entry_bar = i + 1
     for j in range(i + 1, n - 1):
         minutes = day.m[j] + 1 - t0
         bid, _ = quote(day.ic[j], strike, minutes, day.vc[j], call, p)
         if bid > peak: peak = bid
+        if bid > best_bid: best_bid = bid
+        if bid < trough: trough = bid
         if bid <= peak * (1 - p.stop): exit_at = j + 1; reason = "STOP"; break
+        if p.target_rupees is not None and (bid - ask) * UNITS >= p.target_rupees: exit_at = j + 1; reason = "TARGET"; break
+        if p.max_minutes is not None and minutes >= p.max_minutes: exit_at = j + 1; reason = "TIME"; break
         if day.m[j + 1] >= 15 * 60 + 15: exit_at = j + 1; reason = "SESSION"; break
     if exit_at is None: exit_at = n - 1
     minutes = day.m[exit_at] - t0
@@ -75,4 +81,6 @@ def trade(day, i, direction, p):
     gross = (exit_bid - ask) * UNITS
     net = gross - fee(ask, UNITS, True) - fee(max(TICK, exit_bid), UNITS, False)
     return {"date": day.date, "entry_bar": i + 1, "exit_bar": exit_at, "dir": direction, "entry": ask, "exit": exit_bid, "net": net,
-            "gross": gross, "minutes": minutes, "reason": reason}
+            "gross": gross, "minutes": minutes, "reason": reason, "signal_bar": i,
+            # best and worst the position ever was, if sold at the bid (diagnostics only; decisions never use them)
+            "best_rupees": (best_bid - ask) * UNITS, "worst_rupees": (trough - ask) * UNITS}
