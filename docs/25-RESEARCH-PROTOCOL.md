@@ -125,6 +125,20 @@ last third of the sample. Caveats: the index stands in for a futures position (n
 With checkpoint A, six of six pre-registered tests are killed. No variant of these rules has been tried; trying one now is a new hypothesis and
 must be added above and counted in the correction (|t| required rises with every test).
 
+### Correction to A2, 1 November 2026 (found by an independent audit, re-derived here)
+
+The A2 comparison gave the strategy no interest while flat and measured Sharpe without subtracting a risk-free rate, which understates the long/flat
+rule. With cash credited at 6.5% a year while flat, T3 earns 8.8% a year (65% of buy-and-hold's 13.6%) with a 41.0% maximum drawdown (60% of
+buy-and-hold's 68.8%), which meets the pre-registered RISK-MANAGED test (at least 60% of the return, at most 60% of the drawdown) narrowly. Excess
+Sharpe is 0.20 against 0.37 for buy-and-hold, and alpha is still negative, so T3 is a drawdown reducer, not an edge. **T3 is reclassified from
+KILLED to RISK-MANAGED (borderline).** T1 and T2 remain killed (T1 loses even at zero cost). Also recorded: 21 years of data gives the trend tests
+power only for an alpha Sharpe of about 0.57, so "killed" means "no large edge", not "no edge"; every point estimate was negative. Intraday costs in
+the H2/H3 tests were, if anything, understated (the April 2026 tax change raises futures costs), so the gross-zero conclusion stands.
+
+Verified from our data in the same review: India VIX exceeded the next 21 trading days' realised Nifty volatility 81.5% of the time (mean 18.5 against
+15.4; 15.0 against 12.8 since 2022), and 76% of overnight Bank Nifty gaps since 2022 exceed 66 points (median 137), so a Rs 1,000 stop on a lot of 30
+does not cap an overnight loss.
+
 ## Stop rules
 
 Stop and report if: A kills H1-H3 on 2+ years; or any survivor depends on a handful of trend days or one structural period; or after 60 paper
