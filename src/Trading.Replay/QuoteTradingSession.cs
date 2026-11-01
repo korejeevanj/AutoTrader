@@ -54,6 +54,8 @@ public sealed class QuoteTradingSession
     private CompletedBarEvidence[] cachedBars = [];
     private IReadOnlyList<string>? frozenReplayUniverse;
     private long paperCommittedThrough = long.MaxValue;
+    private static readonly TimeSpan RecorderStallTolerance = TimeSpan.FromSeconds(2);
+    private DateTimeOffset? recorderStallSince;
     private long lastPaperEffectSequence;
     public QuoteRunManifest Manifest { get; }
     public string ExecutingCodeVersion { get; }
@@ -150,14 +152,8 @@ public sealed class QuoteTradingSession
         var beforePaper = Paper;
         if (item.Admission is { } admission)
         {
-            RecorderHealthy = admission.RecordingHealthy && admission.PaperHealthy;
             CommittedThrough = admission.MarketCommittedThrough; paperCommittedThrough = admission.PaperCommittedThrough;
-            if (!RecorderHealthy)
-            {
-                var issue = admission.PaperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS";
-                // A what-if keeps the received market data: a recorder blip says the recording is incomplete, not that quotes were lost.
-                if (assumeArmed) Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray(); else Degrade(issue);
-            }
+            ObserveRecorder(admission.RecordingHealthy, admission.PaperHealthy, now);
         }
         AssumeArmed();
         switch (item.Kind)
@@ -169,9 +165,8 @@ public sealed class QuoteTradingSession
                 break;
             case "Health":
                 var health = JsonSerializer.Deserialize<QuoteRecorderHealth>(item.Payload, Json)!;
-                RecorderHealthy = health.Healthy && (item.Admission?.RecordingHealthy ?? true) && (item.Admission?.PaperHealthy ?? true);
                 CommittedThrough = health.CommittedThrough;
-                if (!RecorderHealthy) { RecordingIncomplete = true; AutoEnabled = false; }
+                ObserveRecorder(health.Healthy && (item.Admission?.RecordingHealthy ?? true), item.Admission?.PaperHealthy ?? true, now);
                 break;
             case "Binary":
                 if (lastPacketAtUtc is { } previousPacket && now - previousPacket > profile.Evidence.MaximumFeedSilence
@@ -219,7 +214,9 @@ public sealed class QuoteTradingSession
             && broker.Fresh(heldTick, now) && heldTick.Bids.FirstOrDefault()?.Price > 0;
         if (!EntriesHealthy(now) || !heldQuoteHealthy)
         {
-            AutoEnabled = false;
+            // A short recorder stall blocks entries but keeps auto armed; any other loss, or a stall past the tolerance, disarms it.
+            var stallOnly = recorderStallSince is not null && !RecorderHealthy && heldQuoteHealthy && EntriesHealthy(now, ignoreRecorder: true);
+            if (!stallOnly) AutoEnabled = false;
             UnhealthySince ??= now;
             if (now - UnhealthySince >= TimeSpan.FromSeconds(5)) broker.RequestExit(now, LastSequence, "DATA_OR_RECORDER_LOSS");
         }
@@ -240,8 +237,29 @@ public sealed class QuoteTradingSession
         CommittedThrough = LastSequence; paperCommittedThrough = long.MaxValue;
     }
 
+    // Market recording that is behind for less than RecorderStallTolerance (a slow commit, not lost data) only blocks entries
+    // meanwhile. Paper persistence loss, a stall past the tolerance, or a sequence gap (handled in Apply) void the session.
+    private void ObserveRecorder(bool marketHealthy, bool paperHealthy, DateTimeOffset now)
+    {
+        if (marketHealthy && paperHealthy)
+        {
+            RecorderHealthy = true;
+            if (recorderStallSince is not null && !RecordingIncomplete)
+                Issues = Issues.Append("RECORDER_STALL_TRANSIENT").Distinct(StringComparer.Ordinal).ToArray();
+            recorderStallSince = null;
+            return;
+        }
+        RecorderHealthy = false;
+        if (paperHealthy) recorderStallSince ??= now;
+        if (paperHealthy && now - recorderStallSince < RecorderStallTolerance) return;
+        var issue = paperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS";
+        // A what-if keeps the received market data: a recorder blip says the recording is incomplete, not that quotes were lost.
+        if (assumeArmed) Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray(); else Degrade(issue);
+    }
+
     public void Degrade(string issue)
     {
+        recorderStallSince = null;
         AutoEnabled = false; RecorderHealthy = false; RecordingIncomplete = true;
         if (CurrentTimeUtc is { } at) foreach (var builder in bars.Values) builder.GapAt(at);
         Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray();
@@ -260,7 +278,7 @@ public sealed class QuoteTradingSession
         Issues = boundary.Issues; AutoEnabled = false;
     }
 
-    private bool EntriesHealthy(DateTimeOffset now) => FeedConnected && RecorderHealthy && !LossPaused
+    private bool EntriesHealthy(DateTimeOffset now, bool ignoreRecorder = false) => FeedConnected && (ignoreRecorder || RecorderHealthy) && !LossPaused
         && now >= session.LocalMidnightUtc && now < session.LocalMidnightUtc.AddDays(1)
         && latest.TryGetValue(Future.InstrumentToken, out var future) && broker.Fresh(future, now)
         && future.LastTradeTimeUtc is { } trade && trade <= now && now - trade <= profile.Evidence.MaximumObservationAge;

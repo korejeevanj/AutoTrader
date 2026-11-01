@@ -214,16 +214,16 @@ public sealed class QuoteSessionTests
     }
 
     [Fact]
-    public void An_unhealthy_recorder_admission_voids_bar_coverage_in_the_original_replay_but_not_in_a_what_if()
+    public void A_recorder_stall_past_the_tolerance_voids_bar_coverage_in_the_original_replay_but_not_in_a_what_if()
     {
         QuoteTradingSession Run(bool assumeArmed)
         {
             var session = new QuoteTradingSession(Manifest(), assumeArmed: assumeArmed); var sequence = 0L;
             session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
-            for (var second = 1; second <= 3; second++)
+            for (var second = 1; second <= 5; second++)
             {
                 var now = Open.AddSeconds(second);
-                var admission = new MarketAdmission(now, second != 2, sequence, true, sequence);
+                var admission = new MarketAdmission(now, second is < 2 or > 4, sequence, true, sequence);
                 session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second), admission));
             }
             return session;
@@ -233,6 +233,26 @@ public sealed class QuoteSessionTests
         var whatIf = Run(true);
         Assert.True(whatIf.Checkpoint().Bars["future"].CompleteCoverage);
         Assert.Contains("RECORDER_NOT_HEALTHY_AT_INGRESS", whatIf.Issues);
+    }
+
+    [Fact]
+    public void A_brief_recorder_stall_blocks_entries_meanwhile_but_does_not_void_coverage_or_disarm()
+    {
+        var session = new QuoteTradingSession(Manifest()); var sequence = 0L;
+        session.Apply(new("fixture", ++sequence, Open, "test", "Connected", []));
+        var states = new List<bool>();
+        for (var second = 1; second <= 4; second++)
+        {
+            var now = Open.AddSeconds(second);
+            session.Apply(new("fixture", ++sequence, now, "test", "Binary", Packet(258, now, 100, second),
+                new MarketAdmission(now, second != 2, sequence, true, sequence)));
+            states.Add(session.RecorderHealthy);
+        }
+
+        Assert.Equal([true, false, true, true], states);
+        Assert.False(session.RecordingIncomplete);
+        Assert.True(session.Checkpoint().Bars["future"].CompleteCoverage);
+        Assert.Contains("RECORDER_STALL_TRANSIENT", session.Issues);
     }
 
     [Fact]

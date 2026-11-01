@@ -14,6 +14,7 @@ public sealed class KiteStreamingClient(TimeProvider? clock = null) : IAsyncDisp
     {
         if (!credentials.Configured) throw new KiteDataException("CREDENTIALS_MISSING");
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+        socket.Options.KeepAliveTimeout = TimeSpan.FromSeconds(15); // abort a half-open connection so the host reconnects
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(20));
         try
         {

@@ -52,7 +52,23 @@ public sealed class SqliteQuoteStore(string path)
     public void Append(IReadOnlyList<RecordedMarketEvent> events)
     {
         if (events.Count == 0) return;
-        using var connection = Open(); using var transaction = connection.BeginTransaction();
+        using var connection = Open();
+        AppendTo(connection, events);
+    }
+
+    // One long-lived writer connection for the recorder: reopening per batch lets SQLite checkpoint and reset the WAL whenever the
+    // last connection closes, which measured as commit stalls of hundreds of milliseconds.
+    public QuoteAppender OpenAppender() => new(Open());
+
+    public sealed class QuoteAppender(SqliteConnection connection) : IDisposable
+    {
+        public void Append(IReadOnlyList<RecordedMarketEvent> events) { if (events.Count != 0) AppendTo(connection, events); }
+        public void Dispose() => connection.Dispose();
+    }
+
+    private static void AppendTo(SqliteConnection connection, IReadOnlyList<RecordedMarketEvent> events)
+    {
+        using var transaction = connection.BeginTransaction();
         foreach (var item in events)
         {
             using var command = connection.CreateCommand(); command.Transaction = transaction;
