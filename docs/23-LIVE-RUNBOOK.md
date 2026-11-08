@@ -1,5 +1,8 @@
 # Live paper session runbook and operating modes
 
+> **Suspended 8 November 2026.** Intraday options paper trading has stopped (no edge found; see the closing summary in
+> [25 research protocol](25-RESEARCH-PROTOCOL.md)). Kept for reference and for any future live recording.
+
 Applies from 2 November 2026. Paper only: no broker order, GTT, modify or cancel endpoint is ever called.
 Background: [22 live quote paper trading](22-LIVE-QUOTE-PAPER-TRADING.md). This document adds what changed after the
 21 and 22 October sessions (zero trades) and how to run the day.

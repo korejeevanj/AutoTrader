@@ -28,6 +28,7 @@ npm --prefix ui/trading-dashboard run test:e2e -- --project=desktop --grep "free
 ```
 
 Live session operation (modes `AutoTrader:Mode=Live|Research|Full`, frozen publish, morning check) is in `docs/23-LIVE-RUNBOOK.md`; scripts are in `scripts/live/`.
+Current status: intraday options research is closed (no edge; closing summary in `docs/25-RESEARCH-PROTOCOL.md`); new systematic algo trading work starts from `docs/26-ALGO-TRADING-KICKOFF.md`. Research tools are in `scripts/research/`, data in gitignored `data/research/`.
 
 Run locally (ports 5080/5173 are fixed; e2e starts its own processes with an isolated journal, so free both ports first):
 

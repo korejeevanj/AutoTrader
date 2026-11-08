@@ -1,5 +1,9 @@
 # Research protocol: is there a tradable edge for a retail, one-second automated system?
 
+> **Closed 8 November 2026.** The intraday options line of work is stopped. Summary of what was learned and what was not is in
+> "Closing summary" at the end of this document. The next line of work (systematic algo trading) starts from
+> [26 algo trading kickoff](26-ALGO-TRADING-KICKOFF.md).
+
 Written 1 November 2026, before any multi-year data was analysed. The definitions below are frozen. Changing one after seeing results is a new
 hypothesis: add it here first and count it in the multiple-testing correction. Paper only; no broker order endpoint is ever called.
 
@@ -338,3 +342,35 @@ trend day). Do not use fills better than the recorded bid/ask. Keep the two-day 
 Independent Opus reviews run on 1 Nov 2026 (findings summarised in the session hand-off; sources include SEBI studies, Gao et al. JFE 2018,
 Baltussen et al. JFE 2021, Muravyev et al. JFE 2013, Bhat et al. J. Futures Markets 2024, and the Kite WebSocket and historical documentation).
 Items marked unverified there remain unverified here until the first fetch.
+
+## Closing summary (8 November 2026)
+
+**Question:** can a retail automated system (Zerodha Kite, about one snapshot per second, about Rs 112 per option round trip, Rs 5 lakh capital)
+make money trading Bank Nifty, Nifty or Sensex options intraday?
+
+**Answer from our data: no edge was found.** Every pre-registered test was killed or non-edge, and every exploratory check agreed:
+- Intraday price rules (momentum into the close, breakouts, 108-rule walk-forward search with trailing stops): about zero gross edge, negative net.
+- Multi-day trend rules on 21 years of daily data: no alpha; the 50/200-day filter is only a borderline drawdown reducer.
+- Bank breadth (14 constituents): a real lead of about 1 index point at 5 minutes, gone by 15 minutes, far below the ~19 points of cost.
+- Multi-timeframe candle model over the index and all banks: out-of-sample correlation 0.003.
+- Entries carry no information (the index moved our way 46-49% of the time after signals); no exit rule fixes it (exits change the win rate,
+  not the average). Coin-flip trades with Rs 1,000-2,000 loss cuts and trailing winners lose Rs 200-350 a trade; filters chosen on 2022-23 did
+  not carry over to 2024-26.
+- Outside forces (overnight gap, the owner's forecast ledger, India VIX, crude, rupee) explain the open and the size of the day, not the
+  direction of the tradable session; options already price the size.
+- Blind chart game: four independent "trader" players called the next 15 minutes right 44.7% of the time (114 calls).
+- Overnight defined-risk premium selling: the volatility premium is real (India VIX above later realised volatility 81.5% of the time), but tight
+  spreads capture little after costs; rated marginal (Nifty, Sensex) to not viable (Bank Nifty). Not tested on real option prices.
+
+**Not learned / not tested:** anything on real historical option prices (modelled only), defined-risk premium selling with real prices, stock-level
+factor portfolios, multi-market trend following, anything at speeds we do not have, and the owner's own discretionary judgement.
+
+**Realistic expectation:** Rs 5 lakh in a Nifty index fund averaged about Rs 353 per trading day over 2016-2026 (10.5% a year) with 46% losing days
+and a Rs 2.98 lakh deepest fall. A Rs 1,000-a-day average on Rs 5 lakh is about 50% a year; nothing tested approaches it, and leverage that gets close
+carries a drawdown larger than the capital.
+
+**Kept:** all code (`scripts/research/*`, the live paper platform, replay with diagnostics), the frozen live build, and the data under
+`data/research` (gitignored): 1,190 sessions of minute data for Bank Nifty, Nifty 50, Sensex, India VIX and the 14 banks; 21 years of daily index
+data; crude (2015-2026) and partial rupee futures history; the two recorded live sessions and their re-decoded feature tables; the chart game.
+**Stopped:** live paper sessions (the runbook in doc 23 is suspended); no scheduled jobs exist.
+
