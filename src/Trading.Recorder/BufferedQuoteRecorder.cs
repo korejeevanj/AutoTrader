@@ -51,6 +51,7 @@ public sealed class BufferedQuoteRecorder : IAsyncDisposable
 
     private async Task WriteAsync()
     {
+        SqliteQuoteStore.QuoteAppender? appender = null;
         try
         {
         while (await queue.Reader.WaitToReadAsync(stopWriter.Token))
@@ -60,7 +61,7 @@ public sealed class BufferedQuoteRecorder : IAsyncDisposable
             while (batch.Count < 2048 && queue.Reader.TryRead(out var item)) batch.Add(item);
             try
             {
-                store.Append(batch);
+                (appender ??= store.OpenAppender()).Append(batch);
                 Interlocked.Add(ref bufferedBytes, -batch.Sum(item => item.Payload.LongLength));
                 if (batch.Count != 0) Interlocked.Exchange(ref durableSequence, batch[^1].Sequence);
                 while (pendingTimes.TryPeek(out var head) && head.Sequence <= DurableSequence) pendingTimes.TryDequeue(out _);
@@ -68,24 +69,27 @@ public sealed class BufferedQuoteRecorder : IAsyncDisposable
             catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidDataException)
             {
                 Volatile.Write(ref failure, "RECORDER_WRITE_FAILED");
+                appender?.Dispose(); appender = null;
                 // Keep the failed batch; bounded ingress will eventually fail closed too.
                 while (true)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(1), clock, stopWriter.Token);
                     try
                     {
-                        store.Append(batch); Interlocked.Exchange(ref durableSequence, batch[^1].Sequence);
+                        (appender ??= store.OpenAppender()).Append(batch); Interlocked.Exchange(ref durableSequence, batch[^1].Sequence);
                         Interlocked.Add(ref bufferedBytes, -batch.Sum(item => item.Payload.LongLength));
                         while (pendingTimes.TryPeek(out var head) && head.Sequence <= DurableSequence) pendingTimes.TryDequeue(out _);
                         break;
                     }
-                    catch (Exception retry) when (retry is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidDataException) { }
+                    catch (Exception retry) when (retry is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidDataException)
+                    { appender?.Dispose(); appender = null; }
                 }
                 // Failure remains latched: operator must start/recover a run explicitly.
             }
         }
         }
         catch (OperationCanceledException) when (stopWriter.IsCancellationRequested) { }
+        finally { appender?.Dispose(); }
     }
 
     public async ValueTask DisposeAsync()

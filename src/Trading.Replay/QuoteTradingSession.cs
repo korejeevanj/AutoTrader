@@ -13,7 +13,8 @@ namespace Trading.Replay;
 
 public sealed record QuoteRunManifest(string Id, DateOnly TradingDate, DateTimeOffset CreatedAtUtc,
     IndexDefinition Index, IReadOnlyList<HistoricalInstrument> Instruments, HistoricalWeightSet? Weights,
-    string EngineJson, ResearchFeeSchedule Fees, string CodeVersion, IReadOnlyList<string> ReferenceIssues);
+    string EngineJson, ResearchFeeSchedule Fees, string CodeVersion, IReadOnlyList<string> ReferenceIssues,
+    string? SessionPolicy = null, string? ManualLifecycleWaiver = null);
 public sealed record QuoteControl(string Command, string RequestId, string? ContractId = null);
 public sealed record QuoteRecorderHealth(bool Healthy, long CommittedThrough);
 public sealed record QuoteSessionCheckpoint(long LastSequence, DateTimeOffset? CurrentTimeUtc,
@@ -23,7 +24,11 @@ public sealed record QuoteSessionCheckpoint(long LastSequence, DateTimeOffset? C
     bool LossPaused, DateTimeOffset? UnhealthySince, bool RecordingIncomplete,
     IReadOnlyList<CandidateAssessment> Candidates, PositionDecision? PositionDecision,
     IReadOnlyList<string> Issues, IReadOnlyDictionary<string, OptionScenarioAssessment> AcceptedModels, string? ExecutingCodeVersion = null,
-    IReadOnlyList<GateResult>? ContextGates = null, DirectionalEvidence? Directional = null, long LastPaperEffectSequence = 0);
+    IReadOnlyList<GateResult>? ContextGates = null, DirectionalEvidence? Directional = null, long LastPaperEffectSequence = 0,
+    Dictionary<string, Dictionary<long, decimal>>? AtpByMinute = null, Dictionary<string, DateTimeOffset>? RecoveredFrom = null,
+    bool RearmPending = false);
+// A feed gap that may be healed when the instrument's first post-gap tick proves no exchange day extreme was missed.
+public sealed record FeedGapState(DateTimeOffset StartUtc, decimal? DayHigh, decimal? DayLow);
 
 // Supplied ordered events/clock only. Shared by live hosting and recorded-quote replay.
 public sealed class QuoteTradingSession
@@ -33,6 +38,8 @@ public sealed class QuoteTradingSession
     private readonly TradingDecisionEngine engine;
     private readonly EngineDataMode mode;
     private readonly bool applyRecoveryBoundaries;
+    private readonly bool assumeArmed;
+    private readonly bool researchRisk; // replay-only counterfactual; the live host never sets it
     private readonly EngineConfiguration settings;
     private readonly IndexStrategyConfiguration profile;
     private readonly EngineSession session;
@@ -46,14 +53,32 @@ public sealed class QuoteTradingSession
     private List<string> universe = [];
     private readonly Dictionary<string, OptionScenarioAssessment> acceptedModels = [];
     private bool recovering;
+    private DateTimeOffset? lastPacketAtUtc;
     private string? featureSignature;
     private FuturesFeatureEvidence[] cachedFeatures = [];
     private ConstituentBarEvidence[] cachedConstituents = [];
     private CompletedBarEvidence[] cachedBars = [];
     private IReadOnlyList<string>? frozenReplayUniverse;
     private long paperCommittedThrough = long.MaxValue;
+    private static readonly TimeSpan RecorderStallTolerance = TimeSpan.FromSeconds(2);
+    private DateTimeOffset? recorderStallSince;
     private long lastPaperEffectSequence;
+    // Session policy v2 (recorded in the manifest; legacy runs keep the original behaviour so replays stay identical):
+    // paper-persistence stall tolerance, a prior-run manual-lifecycle waiver, auto re-arm after a clean recovery,
+    // and disclosed healing of short feed gaps using the exchange's own cumulative average traded price.
+    public const string PolicyV2 = "live-session-policy-v2";
+    // Below one minute the engine's contiguous-bar check also protects: a gap that swallows a whole minute bar leaves VWAP unavailable by itself.
+    public static readonly TimeSpan MaximumRecoverableGap = TimeSpan.FromSeconds(60), RearmStability = TimeSpan.FromSeconds(10);
+    private readonly Dictionary<string, FeedGapState> feedGaps = [];
+    private readonly Dictionary<string, Dictionary<long, decimal>> atpByMinute = [];
+    private readonly Dictionary<string, DateTimeOffset> recoveredFrom = [];
+    private bool rearmPending;
+    private DateTimeOffset? rearmHealthySince;
+    private bool V2 => Manifest.SessionPolicy == PolicyV2;
+    public IReadOnlyDictionary<string, DateTimeOffset> RecoveredFrom => recoveredFrom;
+    public bool RearmPending => rearmPending;
     public QuoteRunManifest Manifest { get; }
+    public ReplayDiagnostics? Diagnostics { get; set; }
     public string ExecutingCodeVersion { get; }
     public long LastSequence { get; private set; }
     public DateTimeOffset? CurrentTimeUtc { get; private set; }
@@ -63,6 +88,8 @@ public sealed class QuoteTradingSession
     public long CommittedThrough { get; private set; }
     public bool LossPaused { get; private set; }
     public bool RecordingIncomplete { get; private set; }
+    // Counterfactual replay only: the source recording showed recorder gaps or health loss that the what-if overrode.
+    public bool OverriddenRecordingGaps { get; private set; }
     public DateTimeOffset? UnhealthySince { get; private set; }
     public IReadOnlyList<CandidateAssessment> Candidates { get; private set; } = [];
     public PositionDecision? LastPositionDecision { get; private set; }
@@ -76,8 +103,9 @@ public sealed class QuoteTradingSession
     public HistoricalInstrument Future { get; }
 
     public QuoteTradingSession(QuoteRunManifest manifest, QuoteSessionCheckpoint? recovered = null, string? executingCodeVersion = null,
-        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true)
+        EngineDataMode? mode = null, bool applyRecoveryBoundaries = true, bool assumeArmed = false, bool researchRisk = false)
     {
+        this.assumeArmed = assumeArmed; this.researchRisk = researchRisk;
         Manifest = manifest; settings = EngineConfiguration.FromJson(manifest.EngineJson);
         ExecutingCodeVersion = executingCodeVersion ?? manifest.CodeVersion;
         this.mode = manifest.Index.IsSynthetic ? EngineDataMode.SYNTHETIC_TEST : mode ?? EngineDataMode.PAPER_LIVE_DATA;
@@ -94,7 +122,7 @@ public sealed class QuoteTradingSession
             throw new ArgumentException("Quote-paper slippage must remain one actual contract tick; incompatible overrides are not supported.");
         Future = manifest.Instruments.Single(item => item.Role == HistoricalInstrumentRole.Futures);
         foreach (var item in manifest.Instruments.Where(item => item.Role is HistoricalInstrumentRole.Futures or HistoricalInstrumentRole.Constituent))
-            bars[item.Id] = new(item.Id, session.At(profile.OpeningStart));
+            bars[item.Id] = new(item.Id, session.At(profile.OpeningStart), profile.Evidence.MaximumReceiptAge);
         broker = CreateBroker();
         if (recovered is null) return;
         LastSequence = recovered.LastSequence; CurrentTimeUtc = recovered.CurrentTimeUtc;
@@ -107,6 +135,8 @@ public sealed class QuoteTradingSession
         ContextGates = recovered.ContextGates ?? []; Directional = recovered.Directional;
         lastPaperEffectSequence = recovered.LastPaperEffectSequence;
         foreach (var model in recovered.AcceptedModels) acceptedModels[model.Key] = model.Value;
+        foreach (var item in recovered.AtpByMinute ?? []) atpByMinute[item.Key] = new(item.Value);
+        foreach (var item in recovered.RecoveredFrom ?? []) recoveredFrom[item.Key] = item.Value;
         Issues = ["RECOVERED_PAUSED_POSSIBLE_RECORDING_TAIL_LOSS"];
         if (ExecutingCodeVersion != (recovered.ExecutingCodeVersion ?? manifest.CodeVersion)) Issues = [.. Issues, "RECOVERED_WITH_DIFFERENT_CODE_BUILD"];
         // No recovered connection/arming claim survives a process restart.
@@ -120,7 +150,8 @@ public sealed class QuoteTradingSession
     public QuoteSessionCheckpoint Checkpoint() => new(LastSequence, CurrentTimeUtc, Paper, strategy, positionPolicy,
         Quotes, bars.ToDictionary(item => item.Key, item => item.Value.State), Universe, AutoEnabled,
         FeedConnected, RecorderHealthy, CommittedThrough, LossPaused, UnhealthySince, RecordingIncomplete,
-        Candidates, LastPositionDecision, Issues, new Dictionary<string, OptionScenarioAssessment>(acceptedModels), ExecutingCodeVersion, ContextGates, Directional, lastPaperEffectSequence);
+        Candidates, LastPositionDecision, Issues, new Dictionary<string, OptionScenarioAssessment>(acceptedModels), ExecutingCodeVersion, ContextGates, Directional, lastPaperEffectSequence,
+        atpByMinute.ToDictionary(item => item.Key, item => new Dictionary<long, decimal>(item.Value)), new Dictionary<string, DateTimeOffset>(recoveredFrom), rearmPending);
 
     public void FreezeReplayUniverse(IReadOnlyList<string> recordedUniverse) => frozenReplayUniverse = recordedUniverse;
 
@@ -130,7 +161,7 @@ public sealed class QuoteTradingSession
         try { foreach (var item in events.Where(item => item.Sequence > LastSequence)) Apply(item); }
         finally
         {
-            recovering = false; FeedConnected = false; RecorderHealthy = false; AutoEnabled = false;
+            recovering = false; FeedConnected = false; RecorderHealthy = false; AutoEnabled = false; rearmPending = false;
             RecordingIncomplete = true; Issues = Issues.Append("RECOVERY_TAIL_MARKET_ONLY_NO_RETROACTIVE_FILLS").Distinct().ToArray();
         }
     }
@@ -145,24 +176,33 @@ public sealed class QuoteTradingSession
         var beforePaper = Paper;
         if (item.Admission is { } admission)
         {
-            RecorderHealthy = admission.RecordingHealthy && admission.PaperHealthy;
             CommittedThrough = admission.MarketCommittedThrough; paperCommittedThrough = admission.PaperCommittedThrough;
-            if (!RecorderHealthy) Degrade(admission.PaperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS");
+            ObserveRecorder(admission.RecordingHealthy, admission.PaperHealthy, now);
         }
+        AssumeArmed();
         switch (item.Kind)
         {
             case "Connected": FeedConnected = true; break;
             case "Disconnected":
+                if (AutoEnabled && V2) rearmPending = true;
                 FeedConnected = false; AutoEnabled = false; RecordingIncomplete = true;
-                foreach (var builder in bars.Values) builder.Gap();
+                RegisterFeedGap(now, lastPacketAtUtc ?? now);
+                foreach (var builder in bars.Values) builder.GapAt(now);
                 break;
             case "Health":
                 var health = JsonSerializer.Deserialize<QuoteRecorderHealth>(item.Payload, Json)!;
-                RecorderHealthy = health.Healthy && (item.Admission?.RecordingHealthy ?? true) && (item.Admission?.PaperHealthy ?? true);
                 CommittedThrough = health.CommittedThrough;
-                if (!RecorderHealthy) { RecordingIncomplete = true; AutoEnabled = false; }
+                ObserveRecorder(health.Healthy && (item.Admission?.RecordingHealthy ?? true), item.Admission?.PaperHealthy ?? true, now);
                 break;
             case "Binary":
+                if (lastPacketAtUtc is { } previousPacket && now - previousPacket > profile.Evidence.MaximumFeedSilence
+                    && previousPacket >= session.At(profile.OpeningStart) && now <= session.At(profile.SessionExit))
+                {
+                    RegisterFeedGap(now, previousPacket);
+                    foreach (var builder in bars.Values) builder.Gap();
+                    Issues = Issues.Append("FEED_SILENCE").Distinct(StringComparer.Ordinal).ToArray();
+                }
+                lastPacketAtUtc = now;
                 try
                 {
                     foreach (var decoded in KiteStreamingDecoder.Decode(item.Payload, item.ReceivedAtUtc, item.Sequence))
@@ -174,6 +214,7 @@ public sealed class QuoteTradingSession
                             && tick.LastPrice == old.LastPrice && tick.DayVolume == old.DayVolume && tick.AveragePrice == old.AveragePrice
                             && tick.Bids.SequenceEqual(old.Bids) && tick.Asks.SequenceEqual(old.Asks))) continue;
                         latest[tick.InstrumentToken] = tick;
+                        if (V2) { HealFeedGap(definition.Id, tick, now); RecordAtp(definition.Id, tick); }
                         if (now < session.LocalMidnightUtc.AddDays(1) && bars.TryGetValue(definition.Id, out var builder)) builder.Add(tick);
                         SelectUniverse(tick);
                         var beforePosition = Paper.Position?.Approval.Id;
@@ -195,27 +236,121 @@ public sealed class QuoteTradingSession
                 else if (item.Payload.Length == 0) Issues = Issues.Append("RECOVERY_BOUNDARY_MISSING").Distinct().ToArray();
                 Degrade("RECOVERED_PAUSED_POSSIBLE_RECORDING_TAIL_LOSS"); FeedConnected = false; break;
         }
+        AssumeArmed();
         foreach (var builder in bars.Values) builder.Advance(now);
         var heldQuoteHealthy = Paper.Position is not { } held || latest.TryGetValue(held.Approval.Contract.InstrumentToken, out var heldTick)
             && broker.Fresh(heldTick, now) && heldTick.Bids.FirstOrDefault()?.Price > 0;
         if (!EntriesHealthy(now) || !heldQuoteHealthy)
         {
-            AutoEnabled = false;
+            // A short recorder stall blocks entries but keeps auto armed; any other loss, or a stall past the tolerance, disarms it.
+            var stallOnly = recorderStallSince is not null && !RecorderHealthy && heldQuoteHealthy && EntriesHealthy(now, ignoreRecorder: true);
+            if (!stallOnly) { if (AutoEnabled && V2) rearmPending = true; AutoEnabled = false; }
             UnhealthySince ??= now;
             if (now - UnhealthySince >= TimeSpan.FromSeconds(5)) broker.RequestExit(now, LastSequence, "DATA_OR_RECORDER_LOSS");
         }
         else UnhealthySince = null;
+        Rearm(now, heldQuoteHealthy);
         broker.Advance(now, LastSequence, EntriesHealthy(now), session.At(profile.EntryEnd), session.At(profile.SessionExit));
         if (item.Kind != "Binary") Monitor(now);
         if (item.Kind is "Health" or "Timer" && now < session.LocalMidnightUtc.AddDays(1)) Evaluate(now);
         if (!ReferenceEquals(beforePaper, Paper)) lastPaperEffectSequence = LastSequence;
     }
 
+    // What-if only: treat the recorder as healthy and paper-auto as armed, so recorded quotes can be tested against
+    // changed settings. Feed disconnects, stale quotes and the session loss pause still apply.
+    private void AssumeArmed()
+    {
+        if (!assumeArmed) return;
+        if (RecordingIncomplete || !RecorderHealthy) OverriddenRecordingGaps = true;
+        RecorderHealthy = true; RecordingIncomplete = false; AutoEnabled = !LossPaused;
+        CommittedThrough = LastSequence; paperCommittedThrough = long.MaxValue;
+    }
+
+    // Market recording that is behind for less than RecorderStallTolerance (a slow commit, not lost data) only blocks entries
+    // meanwhile. Paper persistence loss, a stall past the tolerance, or a sequence gap (handled in Apply) void the session.
+    private void ObserveRecorder(bool marketHealthy, bool paperHealthy, DateTimeOffset now)
+    {
+        if (marketHealthy && paperHealthy)
+        {
+            RecorderHealthy = true;
+            if (recorderStallSince is not null && !RecordingIncomplete)
+                Issues = Issues.Append("RECORDER_STALL_TRANSIENT").Distinct(StringComparer.Ordinal).ToArray();
+            recorderStallSince = null;
+            return;
+        }
+        RecorderHealthy = false;
+        var tolerated = paperHealthy || V2; // v2: a slow paper commit blocks entries briefly; a latched write failure outlasts the tolerance
+        if (tolerated) recorderStallSince ??= now;
+        if (tolerated && now - recorderStallSince < RecorderStallTolerance) return;
+        var issue = paperHealthy ? "RECORDER_NOT_HEALTHY_AT_INGRESS" : "PAPER_PERSISTENCE_NOT_HEALTHY_AT_INGRESS";
+        // A what-if keeps the received market data: a recorder blip says the recording is incomplete, not that quotes were lost.
+        if (assumeArmed) Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray(); else Degrade(issue);
+    }
+
     public void Degrade(string issue)
     {
+        recorderStallSince = null; rearmPending = false; feedGaps.Clear(); // lost recording cannot be healed or re-armed
         AutoEnabled = false; RecorderHealthy = false; RecordingIncomplete = true;
-        foreach (var builder in bars.Values) builder.Gap();
+        if (CurrentTimeUtc is { } at) foreach (var builder in bars.Values) builder.GapAt(at);
         Issues = Issues.Append(issue).Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private static long MinuteKey(DateTimeOffset time) => time.ToUnixTimeSeconds() / 60;
+
+    // Notes, per instrument whose coverage is still intact, that a feed gap began. Storage-side loss never lands here.
+    private void RegisterFeedGap(DateTimeOffset now, DateTimeOffset start)
+    {
+        if (!V2 || now < session.At(profile.OpeningStart)) return;
+        foreach (var (id, builder) in bars)
+        {
+            if (feedGaps.ContainsKey(id) || !builder.State.CompleteCoverage) continue;
+            latest.TryGetValue(definitionsById[id].InstrumentToken, out var last);
+            feedGaps[id] = new(start, last?.DayHigh, last?.DayLow);
+        }
+    }
+
+    // First tick after a gap: if the exchange day high/low did not move, no extreme was missed, so the instrument's coverage is
+    // restored and its VWAP comes from the exchange's cumulative average traded price from the gap's minute onward.
+    // Otherwise coverage stays void. The post-gap bar still carries the whole outage's volume; the recovered VWAP never uses it.
+    private void HealFeedGap(string id, MarketTick tick, DateTimeOffset now)
+    {
+        if (!feedGaps.Remove(id, out var gap)) return;
+        var reason = now - gap.StartUtc > MaximumRecoverableGap ? "GAP_TOO_LONG"
+            : gap.DayHigh is null || gap.DayLow is null || tick.AveragePrice is not > 0 || tick.ExchangeTimeUtc is null ? "EXCHANGE_FIELDS_MISSING"
+            : tick.DayHigh != gap.DayHigh || tick.DayLow != gap.DayLow ? "DAY_EXTREME_MOVED_DURING_GAP" : null;
+        if (reason is not null || !bars.TryGetValue(id, out var builder))
+        {
+            Issues = Issues.Append("FEED_GAP_NOT_RECOVERABLE:" + (reason ?? "UNKNOWN_INSTRUMENT")).Distinct(StringComparer.Ordinal).ToArray();
+            return;
+        }
+        builder.Restore(builder.State with { CompleteCoverage = true });
+        if (!recoveredFrom.ContainsKey(id)) { recoveredFrom[id] = DateTimeOffset.FromUnixTimeSeconds(MinuteKey(gap.StartUtc) * 60); atpByMinute[id] = []; }
+        Issues = Issues.Append("FEED_GAP_RECOVERED_EXCHANGE_ATP").Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private void RecordAtp(string id, MarketTick tick)
+    {
+        if (recoveredFrom.ContainsKey(id) && tick.AveragePrice is > 0 && tick.ExchangeTimeUtc is { } time)
+            atpByMinute[id][MinuteKey(time)] = tick.AveragePrice.Value;
+    }
+
+    private decimal? BarVwap(string id, SessionFeature feature)
+    {
+        if (!V2 || !recoveredFrom.TryGetValue(id, out var from) || feature.Candle.StartUtc < from) return feature.Vwap;
+        return feature.CompleteCoverage && atpByMinute.TryGetValue(id, out var map) && map.TryGetValue(MinuteKey(feature.Candle.StartUtc), out var atp) ? atp : null;
+    }
+
+    private string AtpLabel(string id, DateTimeOffset start)
+        => V2 && recoveredFrom.TryGetValue(id, out var from) && start >= from ? "+exchange-atp-gap-recovered" : "";
+
+    // After a feed loss, auto that was armed re-arms once entries have been continuously healthy for RearmStability.
+    private void Rearm(DateTimeOffset now, bool heldQuoteHealthy)
+    {
+        if (!V2 || !rearmPending || AutoEnabled || LossPaused || !EntriesHealthy(now) || !heldQuoteHealthy) { rearmHealthySince = null; return; }
+        rearmHealthySince ??= now;
+        if (now - rearmHealthySince < RearmStability) return;
+        AutoEnabled = true; rearmPending = false; rearmHealthySince = null;
+        Issues = Issues.Append("AUTO_REARMED_AFTER_RECOVERY").Distinct(StringComparer.Ordinal).ToArray();
     }
 
     private void ApplyRecoveryBoundary(QuoteSessionCheckpoint boundary)
@@ -231,10 +366,12 @@ public sealed class QuoteTradingSession
         Issues = boundary.Issues; AutoEnabled = false;
     }
 
-    private bool EntriesHealthy(DateTimeOffset now) => FeedConnected && RecorderHealthy && !LossPaused
+    private bool EntriesHealthy(DateTimeOffset now, bool ignoreRecorder = false) => FeedConnected && (ignoreRecorder || RecorderHealthy) && !LossPaused
         && now >= session.LocalMidnightUtc && now < session.LocalMidnightUtc.AddDays(1)
         && latest.TryGetValue(Future.InstrumentToken, out var future) && broker.Fresh(future, now)
-        && future.LastTradeTimeUtc is { } trade && trade <= now && now - trade <= profile.Evidence.MaximumObservationAge;
+        // v2: the futures quote is fresh by its exchange and receipt timestamps (broker.Fresh). A snapshot feed sends the last trade time of a
+        // slow second, which was older than the limit on about two thirds of recorded ticks; it stays visible as evidence, not a gate.
+        && (V2 || future.LastTradeTimeUtc is { } trade && trade <= now && now - trade <= profile.Evidence.MaximumObservationAge);
 
     private void SelectUniverse(MarketTick tick)
     {
@@ -254,11 +391,11 @@ public sealed class QuoteTradingSession
     {
         switch (control.Command)
         {
-            case "pause": AutoEnabled = false; broker.CancelPending(now, "OPERATOR_PAUSE"); break;
+            case "pause": AutoEnabled = false; rearmPending = false; broker.CancelPending(now, "OPERATOR_PAUSE"); break;
             case "arm":
-                if (!EntriesHealthy(now) || !Paper.Trades.Any(trade => trade.Origin == "MANUAL_TEST"))
+                if (!EntriesHealthy(now) || !Paper.Trades.Any(trade => trade.Origin == "MANUAL_TEST") && !(V2 && Manifest.ManualLifecycleWaiver is not null))
                     throw new InvalidOperationException("AUTO_REQUIRES_HEALTHY_FEED_AND_COMPLETED_MANUAL_LIFECYCLE");
-                AutoEnabled = true; break;
+                AutoEnabled = true; rearmPending = false; break;
             case "exit": broker.CancelPending(now, "OPERATOR_EXIT"); broker.RequestExit(now, LastSequence, "MANUAL_EXIT"); break;
             case "manual":
                 if (string.IsNullOrWhiteSpace(control.RequestId) || string.IsNullOrWhiteSpace(control.ContractId)) throw new InvalidOperationException("MANUAL_IDENTITY_REQUIRED");
@@ -282,7 +419,8 @@ public sealed class QuoteTradingSession
             tick.ExchangeTimeUtc, tick.AvailableAtUtc ?? tick.ReceivedAtUtc, KiteStreamingDecoder.Version, tick.Sequence);
     }
     private UnderlyingPriceEvidence? Underlying() => latest.TryGetValue(Future.InstrumentToken, out var tick)
-        ? new($"{tick.Sequence}:{tick.PacketIndex}", Future.Id, tick.LastPrice, tick.LastTradeTimeUtc, tick.ReceivedAtUtc, tick.AvailableAtUtc ?? tick.ReceivedAtUtc, KiteStreamingDecoder.Version) : null;
+        ? new($"{tick.Sequence}:{tick.PacketIndex}", Future.Id, tick.LastPrice, V2 ? tick.ExchangeTimeUtc : tick.LastTradeTimeUtc, tick.ReceivedAtUtc,
+            tick.AvailableAtUtc ?? tick.ReceivedAtUtc, V2 ? KiteStreamingDecoder.Version + "+exchange-timestamp-event-time" : KiteStreamingDecoder.Version) : null;
     private decimal? NetMark(DateTimeOffset now)
     {
         if (Paper.Position is not { } position) return 0m;
@@ -304,7 +442,7 @@ public sealed class QuoteTradingSession
 
     private IndexEvaluationInput Build(DateTimeOffset now, QuoteControl? manual = null, bool includeCandidates = true)
     {
-        var signature = string.Join(";", bars.Select(item => $"{item.Key}:{item.Value.State.Completed.Count}:{item.Value.State.CompleteCoverage}"));
+        var signature = string.Join(";", bars.Select(item => $"{item.Key}:{item.Value.State.Completed.Count}:{item.Value.State.CompleteCoverage}")) + ":" + string.Join(",", recoveredFrom.Select(item => item.Key + item.Value.Ticks));
         if (signature != featureSignature)
         {
         var futureFeatures = HistoricalSessionAnalytics.Calculate(FuturesBars, session.At(profile.OpeningStart), now, profile.Risk.StructuralLookbackBars);
@@ -314,15 +452,15 @@ public sealed class QuoteTradingSession
             var structural = feature.PreviousMeanTrueRange is { } mean ? HistoricalResearchCalculations.Structural(feature.Candle.Low,
                 feature.Candle.High, feature.Candle.Close, mean, profile.Risk.StructuralBufferMultiplier) : ((decimal LongStop, decimal LongRisk, decimal ShortStop, decimal ShortRisk)?)null;
             return new FuturesFeatureEvidence(feature.Candle.Id + ":quote-features", feature.Candle.Id, session.Id, settings.Version,
-                feature.Candle.AvailableAtUtc, feature.InputBarIds, complete ? feature.Vwap : null, profile.Risk.StructuralLookbackBars,
+                feature.Candle.AvailableAtUtc, feature.InputBarIds, complete ? BarVwap(Future.Id, feature) : null, profile.Risk.StructuralLookbackBars,
                 profile.Risk.StructuralBufferMultiplier, structural?.LongStop, structural?.LongRisk, structural?.ShortStop, structural?.ShortRisk,
-                HistoricalSessionAnalytics.Version + "+" + HistoricalResearchCalculations.Version, complete && feature.CompleteCoverage);
+                HistoricalSessionAnalytics.Version + "+" + HistoricalResearchCalculations.Version + AtpLabel(Future.Id, feature.Candle.StartUtc), complete && feature.CompleteCoverage);
         }).ToArray();
         cachedConstituents = Manifest.Instruments.Where(item => item.Role == HistoricalInstrumentRole.Constituent).SelectMany(item =>
             HistoricalSessionAnalytics.Calculate(bars[item.Id].State.Completed, session.At(profile.OpeningStart), now, profile.Risk.StructuralLookbackBars)
                 .Select(feature => new ConstituentBarEvidence(item.Id, session.Id, feature.Candle.StartUtc, feature.Candle.EndUtc, feature.Candle.AvailableAtUtc,
-                    feature.Candle.Close, bars[item.Id].State.CompleteCoverage ? feature.Vwap : null,
-                    feature.CompleteCoverage && bars[item.Id].State.CompleteCoverage, HistoricalSessionAnalytics.Version))).ToArray();
+                    feature.Candle.Close, bars[item.Id].State.CompleteCoverage ? BarVwap(item.Id, feature) : null,
+                    feature.CompleteCoverage && bars[item.Id].State.CompleteCoverage, HistoricalSessionAnalytics.Version + AtpLabel(item.Id, feature.Candle.StartUtc)))).ToArray();
         cachedBars = FuturesBars.Select(bar => new CompletedBarEvidence(bar.Id, bar.InstrumentId, session.Id, bar.StartUtc, bar.EndUtc, bar.AvailableAtUtc,
             bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)).ToArray();
         featureSignature = signature;
@@ -373,6 +511,7 @@ public sealed class QuoteTradingSession
         if (manual is null) Directional = result.DirectionalEvidence;
         var allocation = engine.Allocate(input.Identity, now, session, input.Portfolio, [result]);
         Candidates = allocation.Decisions;
+        if (manual is null) Diagnostics?.Observe(now, Candidates);
         var selection = Candidates.FirstOrDefault(candidate => candidate.Action == EntryAction.ENTER);
         if (!recovering && selection is not null && EntriesHealthy(now) && paperCommittedThrough >= lastPaperEffectSequence && (manual is not null || AutoEnabled)
             && selection.QuoteId is not null && latest[Future.InstrumentToken].Sequence <= CommittedThrough
@@ -399,8 +538,21 @@ public sealed class QuoteTradingSession
             || quote.Bids.FirstOrDefault() is not { } bid || quote.Asks.FirstOrDefault() is not { } ask
             || !Manifest.Fees.Applies(now, profile.Risk.FeeProfileId, Manifest.Index.IsSynthetic)) return null;
         var expiry = HistoricalAcquisitionStore.Midnight(contract.Expiry!.Value, "Asia/Kolkata").AddHours(15).AddMinutes(30);
-        return ExperimentalOptionScenarios.Assess(future.LastPrice, contract.Strike!.Value, expiry, now, bid.Price, ask.Price,
+        var assessed = ExperimentalOptionScenarios.Assess(future.LastPrice, contract.Strike!.Value, expiry, now, bid.Price, ask.Price,
             contract.TickSize!.Value, contract.LotSize!.Value, contract.Role == HistoricalInstrumentRole.Call, risk.Value, profile.Risk.GrossCashStop, Manifest.Fees, stop);
+        return researchRisk && assessed is not null ? ApplyResearchRisk(assessed, profile.Risk.GrossCashStop) : assessed;
+    }
+
+    // Replay research only. The live gates size risk to the futures structural stop and demand a profit at the worst of three volatility
+    // scenarios, which no one-lot option can satisfy at the configured Rs 400 budget, so a replay never trades and cannot teach anything.
+    // This view sizes risk to what the paper broker actually enforces (the gross cash stop plus round-trip fees, or the immediate
+    // liquidation friction if larger) and measures the +1R/20-minute outcome at unchanged volatility. Labelled, never used live.
+    public static OptionScenarioAssessment ApplyResearchRisk(OptionScenarioAssessment model, decimal grossCashStop)
+    {
+        var unchangedVolatility = model.Scenarios.Where(point => point.UnderlyingR == 1m && point.HorizonSeconds == 1200d && point.VolatilityFactor == 1d)
+            .Select(point => (decimal?)point.NetPnl).FirstOrDefault();
+        return model with { EvidenceClass = "RESEARCH_COUNTERFACTUAL_RISK", NetRisk = Math.Max(model.Friction, grossCashStop + model.RoundTripFees),
+            FavorableNetProfit = unchangedVolatility ?? model.FavorableNetProfit };
     }
 
     private QuoteFillAssessment? Reassess(QuoteEntryApproval intent, MarketTick quote)
@@ -423,7 +575,7 @@ public sealed class QuoteTradingSession
 
     private void Monitor(DateTimeOffset now)
     {
-        if (SessionNet <= -settings.Portfolio.NetSessionPauseLoss) { LossPaused = true; AutoEnabled = false; broker.RequestExit(now, LastSequence, "PORTFOLIO_SESSION_PAUSE"); }
+        if (SessionNet <= -settings.Portfolio.NetSessionPauseLoss) { LossPaused = true; AutoEnabled = false; rearmPending = false; broker.RequestExit(now, LastSequence, "PORTFOLIO_SESSION_PAUSE"); }
         if (Paper.Position is not { } open) { positionPolicy = new(); LastPositionDecision = null; return; }
         if (now >= session.LocalMidnightUtc.AddDays(1))
         { LastPositionDecision = null; broker.RequestExit(now, LastSequence, "PRIOR_SESSION_UNRESOLVED_EXIT"); return; }

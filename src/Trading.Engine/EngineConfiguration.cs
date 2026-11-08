@@ -115,6 +115,7 @@ public sealed record IndexStrategyConfiguration
             && Ranking.All(Enum.IsDefined), "Ranking must contain distinct supported criteria.");
         Require(Evidence is not null && Evidence.MaximumObservationAge > TimeSpan.Zero
             && Evidence.MaximumReceiptAge > TimeSpan.Zero && Evidence.MaximumQuoteSkew >= TimeSpan.Zero
+            && Evidence.MaximumFeedSilence > TimeSpan.Zero
             && Evidence.MaximumSpreadPercent > 0m && Evidence.MinimumDepthLots > 0,
             "Evidence ages, spread and depth must be positive; skew cannot be negative.");
         Require(Risk is not null && Risk.GrossCashStop > 0m && Risk.MaximumNetRisk > 0m
@@ -140,6 +141,8 @@ public sealed record EvidenceConfiguration
     public TimeSpan MaximumObservationAge { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaximumReceiptAge { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaximumQuoteSkew { get; init; } = TimeSpan.FromSeconds(1);
+    // Longest period with no packet from any instrument, in session hours, before the session's bar coverage is voided.
+    public TimeSpan MaximumFeedSilence { get; init; } = TimeSpan.FromSeconds(5);
     public decimal MaximumSpreadPercent { get; init; } = 1m;
     public int MinimumDepthLots { get; init; } = 1;
 }

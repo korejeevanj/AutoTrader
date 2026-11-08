@@ -65,7 +65,7 @@ public sealed class OpenApiTests
         Assert.Contains("Swagger UI", await ui.Content.ReadAsStringAsync());
         var document = JsonNode.Parse(await client.GetStringAsync("/openapi/v1.json"))!;
         var paths = document["paths"]!.AsObject();
-        Assert.Equal(28, paths.Count);
+        Assert.Equal(32, paths.Count);
         Assert.DoesNotContain(paths, x => x.Key.StartsWith("/hubs"));
         var ids = new HashSet<string>();
         foreach (var (path, method, status, expected) in new[]

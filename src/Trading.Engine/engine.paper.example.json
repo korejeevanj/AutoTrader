@@ -24,6 +24,7 @@
         "MaximumObservationAge": "00:00:02",
         "MaximumReceiptAge": "00:00:02",
         "MaximumQuoteSkew": "00:00:01",
+        "MaximumFeedSilence": "00:00:05",
         "MaximumSpreadPercent": 1,
         "MinimumDepthLots": 1
       },

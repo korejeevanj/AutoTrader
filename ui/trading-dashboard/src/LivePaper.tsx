@@ -21,6 +21,8 @@ interface LiveView {
   paper: Paper | null; sessionNet: number | null; positionDecision: { action: string | number; netLiquidationPnl: number | null; reasonCodes: string[] } | null;
   paperPersistenceHealthy: boolean; paperPersistencePending: boolean;
   marketRecordingBytes: number; freeDiskBytes: number; recordedMessagesPerSecond: number; archiveError: string | null;
+  lastDisconnectReason?: string | null; lastReconnectSeconds?: number | null; watchdogReconnects?: number;
+  applyMaxMilliseconds?: number; applyAverageMilliseconds?: number; applySlowCount?: number; timerSlipMaxMilliseconds?: number; readinessAlert?: string | null;
   quoteFreshness: { instrumentToken: number; state: string; quoteAgeSeconds: number | null; receiptAgeSeconds: number | null; lastTradeAgeSeconds: number | null }[];
   contextGates: Gate[];
   directional: { status: string | number; openingHigh: number | null; openingLow: number | null; vwap: number | null; aboveWeightPercent: number | null; belowWeightPercent: number | null; missingWeightPercent: number | null;
@@ -28,7 +30,12 @@ interface LiveView {
   futuresBars: { startUtc: string; endUtc: string; availableAtUtc: string; open: number; high: number; low: number; close: number; volume: number }[];
 }
 interface Recording { id: string; createdAtUtc: string; lastSequence: number; engineJson?: string }
-interface ReplayResult { id: string; sourceRunId: string; mode: string; limitations: string[]; result: { paper: Paper; recordingIncomplete: boolean; candidates?: Candidate[] } }
+interface ReplayDiagnostics {
+  evaluationsWithSetup: number; evaluationsWithoutSetup: number; reasonCounts: Record<string, number>;
+  setups: { setupId: string; atIst: string; direction: string; candidateEvaluations: number; closestMissReasons: string[]; closestMissValues: Record<string, string>; lastReasons: string[]; lastValues: Record<string, string> }[];
+  gateValues: Record<string, { samples: number; threshold: number; min: number; median: number; max: number }>;
+}
+interface ReplayResult { id: string; sourceRunId: string; mode: string; limitations: string[]; result: { paper: Paper; recordingIncomplete: boolean; candidates?: Candidate[] }; diagnostics?: ReplayDiagnostics | null }
 
 async function request<T>(path: string, signal?: AbortSignal, body?: unknown): Promise<T> {
   const deadline = AbortSignal.timeout(body === undefined ? 5000 : 120000);
@@ -61,6 +68,9 @@ export function LivePaper() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [replaySource, setReplaySource] = useState('');
   const [changedConfiguration, setChangedConfiguration] = useState('');
+  const [assumeAutoArmed, setAssumeAutoArmed] = useState(false);
+  const [sessionPolicyV2, setSessionPolicyV2] = useState(false);
+  const [researchRisk, setResearchRisk] = useState(false);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
   useEffect(() => {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
@@ -89,7 +99,7 @@ export function LivePaper() {
   }
   async function runReplay() {
     setBusy(true); setCommandError(''); setReplay(null);
-    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null })); }
+    try { setReplay(await request<ReplayResult>('/api/live/replays', undefined, { sourceRunId: replaySource, engineJson: changedConfiguration.trim() || null, assumeAutoArmed, sessionPolicyV2, researchRisk })); }
     catch (reason) { setCommandError(reason instanceof Error ? reason.message : 'Quote replay failed'); }
     finally { setBusy(false); }
   }
@@ -106,6 +116,7 @@ export function LivePaper() {
       <p className="helper">Recording and protection run on the server independently of this page. A connection heartbeat is not quote freshness. Closed-session or stale observations are not live prices.</p>
       {error && <p role="alert" className="error">Workspace unavailable: {error}. Trading state is unknown until connection recovers.</p>}
       {commandError && <p role="alert" className="error">{commandError}</p>}
+      {view?.readinessAlert && <p role="alert" className="error"><strong>NOT READY FOR THE OPEN:</strong> {view.readinessAlert}</p>}
       {view && <>
         <p role="status"><strong>{view.status}</strong> · Feed {view.connected ? 'connected' : 'disconnected'} · Paper-auto {view.autoEnabled ? 'enabled' : 'paused'} · Recording {view.recordingHealthy ? 'healthy' : 'not ready'}</p>
         <p>Credentials: {view.credentialStatus} · {view.errorCode ?? 'No provider error reported'}</p>
@@ -113,10 +124,12 @@ export function LivePaper() {
         {view.runId && <p><a href={`/api/live/recordings/${encodeURIComponent(view.runId)}/decisions`} target="_blank" rel="noreferrer">Read committed decision history (paged JSON)</a></p>}
         <p>Received sequence {view.receivedSequence} · Committed {view.durableSequence} · Queue {view.recorderQueueDepth} · Lag {num(view.recorderLagMilliseconds)} ms</p>
         <p>Recording file {mb(view.marketRecordingBytes)} MB · {num(view.recordedMessagesPerSecond)} msg/s · Free disk {mb(view.freeDiskBytes)} MB{view.archiveError ? ` · storage fault ${view.archiveError}` : ''}</p>
+        <p>Feed watchdog reconnects {view.watchdogReconnects ?? 0} · last disconnect {view.lastDisconnectReason ?? 'none'}{view.lastReconnectSeconds != null ? ` · reconnect took ${num(view.lastReconnectSeconds)} s` : ''} · session step max {num(view.applyMaxMilliseconds ?? 0)} ms (avg {num(view.applyAverageMilliseconds ?? 0)}, {view.applySlowCount ?? 0} slow) · timer slip max {num(view.timerSlipMaxMilliseconds ?? 0)} ms</p>
         <p>Paper persistence {view.paperPersistenceHealthy ? 'healthy' : 'not ready'}{view.paperPersistencePending ? ' · acknowledgement pending; the account below shows committed state only' : ''}</p>
         {view.recordingIncomplete && <p className="error">Recording contains a gap or possible crash-tail loss. Replay must retain this limitation.</p>}
         <p className="helper">{view.issues.join(' · ') || 'No reference/recovery issues reported.'}</p>
         <div className="toolbar"><button disabled={busy || view.status === 'Preparing' || view.status === 'Connected' || view.status === 'Reconnecting'} onClick={() => void command('start')}>Start / reconnect recording</button>
+          <button disabled={busy || view.status === 'Stopped' || view.status === 'Stopping' || !!view.paper?.position} onClick={() => void command('stop')}>Stop recording</button>
           <button disabled={busy || !view.runId || view.autoEnabled} onClick={() => void command('arm')}>Enable paper-auto</button>
           <button disabled={busy || !view.runId} onClick={() => void command('pause')}>Pause paper-auto</button>
           <button disabled={busy || !view.paper?.position && !view.paper?.pending} onClick={() => void command('exit')}>Request paper exit</button></div>
@@ -148,9 +161,17 @@ export function LivePaper() {
       <div className="toolbar"><button disabled={busy} onClick={() => void loadRecordings()}>Load recordings</button><label>Source recording <select aria-label="Source recording" value={replaySource} onChange={event => setReplaySource(event.target.value)}><option value="">Select session</option>{recordings.map(item => <option key={item.id} value={item.id}>{item.id} · {item.lastSequence} events</option>)}</select></label></div>
       <label>Changed engine configuration JSON (optional)<textarea value={changedConfiguration} onChange={event => setChangedConfiguration(event.target.value)} rows={5} placeholder="Leave empty to use the frozen original configuration" /></label>
       <button disabled={busy || !recordings.find(item => item.id === replaySource)?.engineJson} onClick={() => setChangedConfiguration(recordings.find(item => item.id === replaySource)?.engineJson ?? '')}>Load frozen settings for editing</button>
+      <label><input type="checkbox" checked={assumeAutoArmed} disabled={busy} onChange={event => setAssumeAutoArmed(event.target.checked)} /> What-if: assume paper-auto armed and recorder healthy</label><p className="helper">Counterfactual test of settings on recorded quotes. Ignores the original arm state and recorder gaps; feed disconnects and stale quotes still block entry. The result is labeled WHAT_IF.</p>
+      <label><input type="checkbox" checked={sessionPolicyV2} disabled={busy} onChange={event => setSessionPolicyV2(event.target.checked)} /> What-if: session policy v2 (gap healing, exchange-age freshness)</label>
+      <label><input type="checkbox" checked={researchRisk} disabled={busy} onChange={event => setResearchRisk(event.target.checked)} /> What-if: research risk (size risk to the cash stop, judge profit at unchanged volatility)</label><p className="helper">Research risk is a replay-only counterfactual. The live gates size risk to the futures structural stop and always reject one-lot options at the configured budget, so a replay under them can never trade or teach anything.</p>
       <button disabled={busy || !replaySource} onClick={() => void runReplay()}>Replay recorded quotes</button>
       {replay && <><h3>{replay.mode}</h3><p>Result {replay.id} · Source {replay.sourceRunId}</p><p>{replay.limitations.join(' · ')}</p>
         {!!replay.result.candidates?.length && <details><summary>Replayed candidate decisions</summary>{replay.result.candidates.map(candidate => <p key={candidate.contractId}>{candidate.contractId} · {enumLabel(candidate.action, ['ENTER', 'WATCH', 'SKIP', 'INSUFFICIENT_DATA'])} · {candidate.reasonCodes.join(' · ')}</p>)}</details>}
+        {replay.diagnostics && <details open><summary>Why it did or did not trade</summary>
+          <p>{replay.diagnostics.setups.length} setup(s) formed · evaluations with a live setup {replay.diagnostics.evaluationsWithSetup} · without {replay.diagnostics.evaluationsWithoutSetup}</p>
+          {replay.diagnostics.setups.map(item => <p key={item.setupId}>Setup {item.atIst} IST {item.direction}: when last evaluated the best candidate was blocked by {item.lastReasons.join(', ') || 'nothing'} {Object.entries(item.lastValues).map(([code, value]) => `${code} ${value}`).join(' · ')}</p>)}
+          <p className="helper">Rejection reasons while a setup was live: {Object.entries(replay.diagnostics.reasonCounts).slice(0, 10).map(([code, count]) => `${code} ${count}`).join(' · ') || 'none'}</p>
+          {Object.entries(replay.diagnostics.gateValues).map(([code, stats]) => <p key={code} className="helper">{code}: observed min {num(stats.min)} · median {num(stats.median)} · max {num(stats.max)} against limit {num(stats.threshold)} ({stats.samples} samples)</p>)}</details>}
         <Ledger paper={replay.result.paper} /></>}
     </section>
   </div>;
